@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.erikrjohansson.hotkey-wheel",
+  "name": "Hotkey Wheel",
+  "version": "0.5.0",
+  "author": "erikrjohansson",
+  "license": "MIT",
+  "description": "A theme-aware action wheel: hold middle-click, point, and release.",
+  "kinds": ["overlay", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": { "overlay": "HotkeyWheel.qml", "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Hotkey Wheel",
+    "description": "See the wheel and change what each slot runs.",
+    "category": "Tools",
+    "aliases": ["wheel", "hotkey-wheel", "radial"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

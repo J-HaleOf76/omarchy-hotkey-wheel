@@ -1,0 +1,233 @@
+#!/bin/bash
+# Helper for the Hotkey Wheel plugin. Only `checked` runs a wheel slot.
+#
+# hotkey-wheel records   Omarchy's keybinding records ("COMBO → Description<TAB>dispatcher<TAB>arg"),
+#                        from its own SUPER + K reader, for the picker's Keybindings tab.
+# hotkey-wheel state     "setup" or "not-setup", then one "conflict<TAB><trigger><TAB><description>"
+#                        line for each trigger another binding already uses.
+# hotkey-wheel setup     Adds the Hotkey Wheel lines to ~/.config/hypr/bindings.lua (once) and
+#                        reloads Hyprland. Run only on request.
+# hotkey-wheel unsetup   Removes that block again and reloads Hyprland.
+# hotkey-wheel apply     Reloads Hyprland so a changed trigger or On switch takes effect.
+# hotkey-wheel checked HASH SCRIPT LABEL COMMAND
+#                        Runs a slot whose script was pinned when it was saved: COMMAND only
+#                        while SCRIPT's SHA-256 is still HASH; otherwise a notification, and
+#                        nothing runs.
+#
+# Errors go to stderr as one line and the exit status is non-zero.
+
+plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+hypr_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+bindings_file="$hypr_dir/bindings.lua"
+settings_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/hotkey-wheel.json"
+lua_path=${plugin_dir//\\/\\\\}
+lua_path=${lua_path//\"/\\\"}
+setup_line="dofile(\"$lua_path/bindings.lua\")"
+
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+# --- Keybinding records ------------------------------------------------------
+# Reuses omarchy-menu-keybindings by sourcing everything before its entry
+# point. If that line ever changes, fail instead of sourcing the menu, which
+# would open it.
+records() {
+  local script menu='^if \[\[ \$1 == "--print"'
+  script=$(command -v omarchy-menu-keybindings) || fail "omarchy-menu-keybindings not found"
+  grep -q "$menu" "$script" || fail "omarchy-menu-keybindings changed; cannot read its binds"
+  source <(sed "/$menu/,\$d" "$script")
+  declare -F output_binding_records >/dev/null || fail "omarchy-menu-keybindings changed; cannot read its binds"
+  output_binding_records
+}
+
+# --- Setup ---------------------------------------------------------------------
+# Setup writes one marked block and removal deletes exactly that block (all
+# three lines, in order, unchanged). No other line of the file is interpreted
+# or touched. Whether it is loaded is asked of Hyprland itself, so a line
+# added by hand counts as set up too (and is left for the user to remove).
+block_begin="-- >>> io.github.erikrjohansson.hotkey-wheel: added by Hotkey Wheel's Set up (remove with hotkey-wheel unsetup)"
+block_end="-- <<< io.github.erikrjohansson.hotkey-wheel"
+block_text="$block_begin"$'\n'"$setup_line"$'\n'"$block_end"$'\n'
+
+# The file's bytes, trailing newlines included; fails when it cannot be read.
+file_text() {
+  local text
+  text=$(cat -- "$bindings_file" && printf x) || return 1
+  printf '%s' "${text%x}"
+}
+
+# Replaces the file's contents in one step, keeping its permissions, so a
+# failure never leaves it empty or half written.
+write_bindings() {
+  local target tmp
+  target=$(readlink -f -- "$bindings_file") || return 1
+  tmp=$(mktemp -- "$(dirname -- "$target")/.bindings.lua.XXXXXX") || return 1
+  if printf '%s' "$1" >"$tmp" && chmod --reference="$target" -- "$tmp" && mv -f -- "$tmp" "$target"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+has_block() {
+  [[ -f $bindings_file ]] || return 1
+  local text
+  text=$(file_text && printf x) || return 1
+  text=${text%x}
+  [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
+}
+
+# Hyprland's bindings as "modmask<TAB>key<TAB>description" lines. The plain
+# output is parsed because `hyprctl -j binds` is not valid JSON on 0.56.
+binds() {
+  hyprctl binds 2>/dev/null | awk '
+    function emit() { if (seen) printf "%s\t%s\t%s\n", f["modmask"], f["key"], f["description"]; seen = 0 }
+    /^bind/ { emit(); seen = 1; delete f; next }
+    seen && match($0, /^\t[a-z]+: /) { f[substr($0, 2, RLENGTH - 3)] = substr($0, RLENGTH + 1) }
+    END { emit() }'
+}
+
+loaded() {
+  binds | awk -F '\t' '$3 == "Hotkey Wheel (hold)" { found = 1 } END { exit !found }'
+}
+
+# The drawer's On switch is off: bindings.lua then binds nothing, so Hyprland
+# cannot tell whether it is loaded and the file is asked instead.
+switched_off() {
+  [[ -f $settings_file ]] && grep -Eq '"enabled"[[:space:]]*:[[:space:]]*false' "$settings_file"
+}
+
+# A Lua file in the Hyprland config folder loads this plugin's bindings.lua,
+# by Set up or by hand. Prints the files.
+mentioned() {
+  [[ -d $hypr_dir ]] && grep -rlF --include='*.lua' "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
+}
+
+# Whether Hyprland should bind the trigger after a reload.
+want_loaded() {
+  if switched_off; then echo false; else echo true; fi
+}
+
+state() {
+  local list
+  list=$(binds) || fail "could not read Hyprland's bindings"
+  [[ -n $list ]] || fail "could not read Hyprland's bindings"
+  if awk -F '\t' '$3 == "Hotkey Wheel (hold)" { found = 1 } END { exit !found }' <<<"$list" || has_block \
+      || { switched_off && mentioned >/dev/null; }; then
+    echo setup
+  else
+    echo not-setup
+  fi
+  # Presses other bindings already use (SUPER is modmask 64; keys are as
+  # Lua binds report them, with modifiers spelled out).
+  awk -F '\t' '
+    $3 ~ /^Hotkey Wheel/ { next }
+    { key = $2; sub(/^.* \+ /, "", key) }
+    key == "mouse:274" && $1 == 0  { print "conflict\tmiddle\t" $3 }
+    key == "mouse:274" && $1 == 64 { print "conflict\tsuper-middle\t" $3 }
+    key == "mouse:275" && $1 == 0  { print "conflict\tback\t" $3 }
+    key == "mouse:276" && $1 == 0  { print "conflict\tforward\t" $3 }' <<<"$list"
+}
+
+reload_and_check() {
+  local want=$1 errors
+  hyprctl reload >/dev/null 2>&1 || fail "hyprctl reload failed"
+  sleep 0.3
+  errors=$(hyprctl configerrors 2>/dev/null) || fail "could not ask Hyprland for config errors"
+  errors=$(grep -v '^[[:space:]]*$' <<<"$errors")
+  [[ -n $errors ]] && fail "Hyprland reports a config error: $(head -n1 <<<"$errors")"
+  if [[ $want == true ]]; then loaded; else ! loaded; fi
+}
+
+setup() {
+  if loaded; then echo setup; return; fi
+  local existed=false original="" added=false
+  if ! has_block && ! mentioned >/dev/null; then
+    mkdir -p "$(dirname "$bindings_file")" || fail "could not create $(dirname "$bindings_file")"
+    if [[ -e $bindings_file ]]; then
+      existed=true
+      original=$(file_text && printf x) || fail "could not read $bindings_file"
+      original=${original%x}
+    fi
+    {
+      [[ -s $bindings_file && $(tail -c1 "$bindings_file") != "" ]] && echo
+      echo "$block_begin"
+      echo "$setup_line"
+      echo "$block_end"
+    } >>"$bindings_file" || fail "could not write $bindings_file"
+    added=true
+  fi
+  # If Hyprland can't take the line (say the file ends in a `return`), the
+  # file goes back to exactly what it was.
+  local error
+  if ! error=$( (reload_and_check "$(want_loaded)") 2>&1 >/dev/null); then
+    error=${error:-Hyprland did not load Hotkey Wheel after the reload}
+    if [[ $added == true ]]; then
+      if [[ $existed == true ]]; then write_bindings "$original"; else rm -f -- "$bindings_file"; fi
+      hyprctl reload >/dev/null 2>&1
+      fail "$error. $bindings_file was put back as it was; add the line by hand (see the README)"
+    fi
+    fail "$error"
+  fi
+  echo setup
+}
+
+unsetup() {
+  omarchy-shell io.github.erikrjohansson.hotkey-wheel cancel >/dev/null 2>&1
+  if has_block; then
+    # Drop the first exact copy of the block; every other byte stays as it is.
+    local text
+    text=$(file_text && printf x) || fail "could not read $bindings_file"
+    text=${text%x}
+    if [[ $text == "$block_text"* ]]; then
+      text=${text#"$block_text"}
+    else
+      text=${text/$'\n'"$block_text"/$'\n'}
+    fi
+    write_bindings "$text" || fail "could not write $bindings_file"
+  fi
+  # A line added by hand would load a missing file once the plugin is gone.
+  local still
+  if still=$(mentioned); then
+    hyprctl reload >/dev/null 2>&1
+    fail "$(head -n1 <<<"$still") still loads Hotkey Wheel through a line not added by Set up; remove that line by hand"
+  fi
+  if ! reload_and_check false; then
+    fail "Hotkey Wheel is still loaded by a line not added by Set up (in $bindings_file or a file it loads); remove that line by hand"
+  fi
+  echo not-setup
+}
+
+# After the trigger or the On switch changed.
+apply() {
+  loaded || has_block || mentioned >/dev/null || { echo not-setup; return; }
+  if [[ $(want_loaded) == true ]]; then
+    reload_and_check true || fail "Hyprland did not load Hotkey Wheel after the reload"
+  else
+    reload_and_check false || fail "Hyprland still binds the wheel after the reload"
+  fi
+  echo setup
+}
+
+checked() {
+  local want=$1 script=$2 label=$3 command=$4 have=""
+  [[ -n $script && -f $script ]] && have=$(timeout 5 sha256sum < "$script" 2>/dev/null)
+  if [[ -z $want || ${have%% *} != "$want" ]]; then
+    notify-send -u critical -a "Hotkey Wheel" -- "$label didn't run" \
+      "Its script is missing or changed since you saved it. Open it under Custom actions in the wheel's drawer to read it and approve it again." 2>/dev/null
+    exit 1
+  fi
+  exec /bin/sh -c "$command"
+}
+
+case "${1:-}" in
+  records) records ;;
+  state) state ;;
+  setup) setup ;;
+  unsetup) unsetup ;;
+  apply) apply ;;
+  checked) [[ $# -eq 5 ]] || fail "usage: hotkey-wheel checked HASH SCRIPT LABEL COMMAND"; checked "$2" "$3" "$4" "$5" ;;
+  *) fail "usage: hotkey-wheel [records|state|setup|unsetup|apply|checked]" ;;
+esac
