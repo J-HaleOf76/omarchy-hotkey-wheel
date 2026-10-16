@@ -105,7 +105,8 @@ with open(os.environ["WHEEL_TEST_LOG"] + ".copy", "a") as file:
     (sandbox / "hyprctl").write_text(r"""#!/bin/bash
 f="$XDG_CONFIG_HOME/hypr/bindings.lua"
 case "$1" in
-  binds) lua -e "assert(loadfile('$f'))" 2>/dev/null && grep -q 'hotkey-wheel/bindings.lua' "$f" \
+  binds) printf 'bind\n\tmodmask: 64\n\tkey: W\n\tdescription: Close window\n'
+         lua -e "assert(loadfile('$f'))" 2>/dev/null && grep -q 'hotkey-wheel/bindings.lua' "$f" \
            && printf 'bind\n\tmodmask: 0\n\tkey: mouse:274\n\tdescription: Hotkey Wheel (hold)\n' ;;
   configerrors) lua -e "assert(loadfile('$f'))" 2>&1 >/dev/null | head -n1 ;;
 esac
@@ -127,6 +128,19 @@ esac
     (base / "config/omarchy/extensions/hotkey-wheel.json").write_text('{"enabled": false}')
     by_hand = helper("unsetup")
     assert by_hand.returncode == 1 and "mine.lua" in by_hand.stderr, by_hand
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    # The same line reached through a link (a linked folder or file, as stow
+    # makes) still counts, so switching the wheel off can be undone.
+    elsewhere = base / "dotfiles"
+    (elsewhere / "mods").mkdir(parents=True)
+    (hypr / "mine.lua").rename(elsewhere / "mods/mine.lua")
+    (hypr / "mods").symlink_to(elsewhere / "mods", target_is_directory=True)
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    (hypr / "mods").unlink()
+    (hypr / "mine.lua").symlink_to(elsewhere / "mods/mine.lua")
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    by_link = helper("unsetup")
+    assert by_link.returncode == 1 and "mine.lua" in by_link.stderr, by_link
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
                               capture_output=True, text=True)
@@ -143,4 +157,4 @@ esac
                                capture_output=True, text=True).stdout
     assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
         ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wheel binds never removed, conflicts, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, wheel binds never removed, conflicts, exactly-once dispatch")
