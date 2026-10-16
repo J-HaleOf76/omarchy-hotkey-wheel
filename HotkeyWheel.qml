@@ -5,7 +5,6 @@ import Quickshell.Wayland
 import Quickshell.Hyprland
 import qs.Commons
 import "Actions.js" as Actions
-import "Bus.js" as Bus
 
 Item {
     id: root
@@ -142,12 +141,8 @@ Item {
         function onRawEvent(event) { if (event.name === "custom") root.hyprlandEvent(event.data) }
     }
 
-    // A slot with a pinned script runs through the helper's check (Actions.runCommand).
-    readonly property string helperPath: Qt.resolvedUrl("hotkey-wheel").toString().replace(/^file:\/\//, "")
-
     function activate() {
-        var command = activeAction && activeAction.command
-            ? Actions.runCommand(activeAction, helperPath, Quickshell.env("HOME")) : ""
+        var command = activeAction && activeAction.command ? activeAction.command : ""
         dismiss()
         if (!command || pendingCommand) return
         pendingCommand = command
@@ -155,25 +150,6 @@ Item {
     }
 
     function reload() { settingsFile.reload() }
-
-    // An agent's suggestion opens in the bar drawer's picker. Nothing runs or
-    // changes until the user tries it or saves it.
-    function propose(slot, label, icon, command, description) {
-        if (!(slot >= 1 && slot <= actions.length)) return "error: slot must be 1 to " + actions.length + "."
-        var action
-        try {
-            action = Actions.validateProposal({ label: label, icon: icon || Actions.glyphFor(label, command),
-                                                command: command, description: description }, slot - 1)
-        } catch (e) { return "error: " + e.message }
-        var drawer = Bus.drawerFor(Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
-        if (!drawer) return "error: the Hotkey Wheel is not on the bar, so there is nowhere to review the suggestion. "
-                            + "Add it with: omarchy bar put io.github.erikrjohansson.hotkey-wheel"
-        // The drawer takes keyboard focus, which drops a held button's release.
-        if (holding) dismiss()
-        var refused = drawer.propose(slot - 1, action)
-        if (refused) return "error: " + refused
-        return "ok: suggested for slot " + slot + ". It is open on the wheel for the user to read, try, and save or discard."
-    }
 
     function point(x, y) {
         // Both modes hit-test what is drawn: the shown centre, with the hub as
@@ -198,15 +174,6 @@ Item {
         // The bar drawer saves the settings file; this picks it up even when
         // the file did not exist yet, which the watcher cannot see.
         function reload(): void { root.reload() }
-        // For agents: see the saved slots, and suggest a change for review.
-        function slots(): string {
-            return JSON.stringify(root.actions.map(function(a, i) {
-                return { slot: i + 1, label: a.label, icon: a.icon, command: a.command, description: a.description || "" }
-            }), null, 2)
-        }
-        function propose(slot: int, label: string, icon: string, command: string, description: string): string {
-            return root.propose(slot, label, icon, command, description)
-        }
         function status(): string {
             return JSON.stringify({ opened: root.opened, locating: root.locating,
                 holding: root.holding, selected: root.selected,
@@ -314,7 +281,6 @@ Item {
                 actions: root.actions
                 labels: (root.settings || Actions.defaults()).labels
                 selected: root.selected
-                holding: root.holding
                 pointerAngle: root.pointerAngle
             }
 

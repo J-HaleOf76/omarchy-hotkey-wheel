@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Exercise gesture races, settings, and dispatch with a fake compositor CLI."""
-import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 
 root = Path(__file__).resolve().parents[1]
 shell = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")) / "shell"
@@ -25,14 +25,22 @@ elif "eval" in sys.argv:
 else: print('{}')
 ''')
     fake.chmod(0o755)
+    # Logs what wl-copy gets on the command line and on stdin, separately.
+    copier = base / "bin" / "wl-copy"
+    copier.write_text('''#!/usr/bin/python3
+import json, os, sys
+with open(os.environ["WHEEL_TEST_LOG"] + ".copy", "a") as file:
+    file.write(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}) + "\\n")
+''')
+    copier.chmod(0o755)
     source = (root / "tests/runtime.qml").read_text()
-    source = source.replace("PLUGIN_PATH", root.as_uri()).replace("ACTIONS_PATH", (root / "Actions.js").as_uri()).replace("BUS_PATH", (root / "Bus.js").as_uri())
+    source = source.replace("PLUGIN_PATH", root.as_uri()).replace("ACTIONS_PATH", (root / "Actions.js").as_uri())
     (base / "shell.qml").write_text(source)
     display = os.environ.get("WAYLAND_DISPLAY", "wayland-1")
     if not display.startswith("/"):
         display = str(Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")) / display)
     env = dict(os.environ, QT_QPA_PLATFORM="wayland", QT_QUICK_BACKEND="software", WAYLAND_DISPLAY=display,
-               QT_QPA_PLATFORMTHEME="basic", QT_QUICK_CONTROLS_STYLE="Basic",
+               QT_QPA_PLATFORMTHEME="basic", QT_QUICK_CONTROLS_STYLE="Basic", LANGUAGE="sv:de",
                XDG_CONFIG_HOME=str(base / "config"), XDG_CACHE_HOME=str(base / "cache"),
                XDG_RUNTIME_DIR=str(base / "run"),
                PATH=str(base / "bin") + ":" + os.environ["PATH"], WHEEL_TEST_LOG=str(base / "dispatch.jsonl"),
@@ -44,6 +52,21 @@ else: print('{}')
     (base / "scripts/a.sh").write_text("#!/bin/sh\necho reviewed\n")
     os.mkfifo(base / "scripts/pipe.sh")
     (base / "scripts/latin1.sh").write_bytes(b"#!/bin/sh\necho caf\xe9\n")
+    # Watches every process's command line for the prompt's marker while the test runs
+    # (not the processes that started this test, whose command lines may mention it).
+    leaks, scanning, starters, pid = [], threading.Event(), set(), os.getppid()
+    while pid > 1:
+        starters.add(str(pid))
+        pid = int(Path("/proc", str(pid), "stat").read_text().rsplit(")", 1)[1].split()[1])
+    def scan():
+        while not scanning.is_set():
+            for pid in os.listdir("/proc"):
+                try:
+                    if pid.isdigit() and pid not in starters and b"CMD-MARKER-7" in Path("/proc", pid, "cmdline").read_bytes():
+                        leaks.append(Path("/proc", pid, "cmdline").read_bytes()[:300])
+                except OSError: pass
+    scanner = threading.Thread(target=scan, daemon=True)
+    scanner.start()
     try:
         result = subprocess.run(["qs", "-p", str(base / "shell.qml"), "--no-color"], env=env,
                                 capture_output=True, text=True, timeout=12)
@@ -57,6 +80,13 @@ else: print('{}')
     lua = subprocess.run(["lua", "-", calls[0][1]], input="hl={exec_cmd=function(c) io.write(c) end}; assert(load(arg[1]))()",
                          capture_output=True, text=True, check=True)
     assert lua.stdout == "printf hotkey-wheel-test", lua.stdout
+    # The agent prompt (here with the request, CMD-MARKER-7) reaches wl-copy on stdin only, without the slot's command.
+    scanning.set()
+    scanner.join()
+    assert not leaks, "prompt text seen in a process's arguments: " + str(sorted(set(leaks)))
+    copies = [json.loads(line) for line in (base / "dispatch.jsonl.copy").read_text().splitlines()]
+    assert len(copies) == 1 and copies[0]["argv"] == ["--type", "text/plain"] and "CMD-MARKER-7" in copies[0]["stdin"] \
+        and "SLOT-MARKER-3" not in copies[0]["stdin"], copies
     saved = json.loads((base / "config/omarchy/extensions/hotkey-wheel.json").read_text())
     library = json.loads((base / "config/omarchy/extensions/hotkey-wheel-custom.json").read_text())
     assert library == {"version": 1, "commands": [{"label": "Blurry", "icon": "", "command": "blur", "description": "Blurs it more."},
@@ -66,24 +96,6 @@ else: print('{}')
     assert saved["trigger"] == "back" and saved["actions"][0]["label"] != "Draft" and saved["labels"] is True, saved
     # ...and then switched it off, keeping the trigger.
     assert saved["enabled"] is False, saved
-    # The helper runs a pinned script only while it is unchanged.
-    helper_env = dict(env, PATH=str(base / "bin") + ":" + os.environ["PATH"])
-    (base / "bin" / "notify-send").write_text("#!/bin/sh\necho notified >> \"$WHEEL_TEST_LOG.notify\"\n")
-    (base / "bin" / "notify-send").chmod(0o755)
-    script = base / "scripts/pinned.sh"
-    script.write_text("#!/bin/sh\necho pinned\n")
-    digest = hashlib.sha256(script.read_bytes()).hexdigest()
-    ran = subprocess.run([str(root / "hotkey-wheel"), "checked", digest, str(script), "Pinned", "echo ran"],
-                         env=helper_env, capture_output=True, text=True)
-    assert ran.returncode == 0 and ran.stdout == "ran\n", ran
-    script.write_text("#!/bin/sh\necho changed\n")
-    refused = subprocess.run([str(root / "hotkey-wheel"), "checked", digest, str(script), "Pinned", "echo ran"],
-                             env=helper_env, capture_output=True, text=True)
-    assert refused.returncode == 1 and "ran" not in refused.stdout, refused
-    empty = subprocess.run([str(root / "hotkey-wheel"), "checked", digest, "", "Pinned", "echo ran"],
-                           env=helper_env, capture_output=True, text=True)
-    assert empty.returncode == 1 and "ran" not in empty.stdout, empty
-    assert (base / "dispatch.jsonl.notify").read_text() == "notified\nnotified\n"
     # Set up and removal, against a sandboxed Hyprland that loads the config
     # with real Lua: a line Hyprland can't take is put back out of the file.
     hypr = base / "config/hypr"
@@ -115,4 +127,4 @@ esac
     (base / "config/omarchy/extensions/hotkey-wheel.json").write_text('{"enabled": false}')
     by_hand = helper("unsetup")
     assert by_hand.returncode == 1 and "mine.lua" in by_hand.stderr, by_hand
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, agent proposals, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script checks, pinned scripts, warnings, replaced suggestions, picker opens on the slot's tab, setup/unsetup, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, exactly-once dispatch")

@@ -27,14 +27,16 @@ picker has four searchable tabs:
   way SUPER + K reads them.
 - **Custom**: your saved custom actions, and **Create new action** for your
   own name, icon, description and shell command. **Try it** runs it once;
-  **Save it** puts it on the slot and keeps it. Click a saved action to see
+  **Save it** puts it on the slot and keeps it. Both first show you the
+  command and its script to read, and go on only when you click **Yes**. Click a saved action to see
   what it does, its command and its script, and to use, rename or remove it.
 
-  Or describe what you want under **Ask an agent**, and Claude Code or Codex
-  writes it for you. Its suggestion opens with what it does, the command and
-  any script in full, and nothing runs until you click. Always read the
-  command and script before you try or save it: once saved, it runs like a
-  keybinding you wrote yourself.
+  Not sure what to write? Describe what you want under **Ask an agent** and
+  **Copy prompt** into Claude Code, Codex or any other agent. Its answer ends
+  with a code block of four lines, Name to Command: copy it, open the slot
+  again and **Paste answer** fills in the form. Read the command and any
+  script it wrote when Try it or Save it shows them: once saved, it runs
+  like a keybinding you wrote yourself.
 
 **Slots** sets how many the wheel has, and **Show names** shows or hides the
 names under the icons. Picks from the lists and these two settings are kept
@@ -47,9 +49,9 @@ omarchy plugin add https://github.com/erikrjohansson/omarchy-hotkey-wheel.git --
 ```
 
 This puts the wheel's icon on the bar. To open the wheel with your mouse,
-Hyprland needs one more line. Hyprland decides what mouse buttons do, and a
-plugin can't change your Hyprland config on its own, so you add it once,
-either way:
+Hyprland needs one more line. Hyprland decides what mouse buttons do, and the
+plugin only changes your Hyprland config when you ask it to, so you add it
+once, either way:
 
 - **In the drawer**: click **Set up**. It adds the line (marked, at the end
   of `~/.config/hypr/bindings.lua`) and reloads Hyprland. Nothing else in the
@@ -88,11 +90,10 @@ you don't plan to come back.
 
 ## Requirements
 
-Omarchy 4 with the Lua Hyprland config (tested on Omarchy 4.0.0 alpha and
-Hyprland 0.56.2). Uses `hyprctl`, `bash`, `lua`, GNU coreutils and `awk`,
-`iconv`, `notify-send`, `gtk-launch`, `uwsm-app` and `wl-copy`, all part of
-Omarchy. The Custom tab's optional **Ask an agent** button uses Claude Code
-or Codex if installed.
+Omarchy 4 with the Lua Hyprland config (tested on Omarchy 4.0.0 alpha,
+Hyprland 0.56.2 and Quickshell 0.3.1). Uses `hyprctl`, `bash`, GNU coreutils, `grep`, `sed` and `awk`,
+`iconv`, `gtk-launch`, `uwsm-app`, `wl-copy` and `wl-paste`, all part of
+Omarchy. The Custom tab's **Copy prompt** works with any agent you use.
 
 ## License
 

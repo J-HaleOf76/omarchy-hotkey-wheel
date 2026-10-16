@@ -8,8 +8,8 @@ import "Actions.js" as Actions
 
 // The picker card: everything a slot can run, in tabs: desktop apps, curated
 // Omarchy actions, every Omarchy keybinding, and custom actions (with a page to
-// create one or ask an agent). ActionPicker hosts it in a modal layer, with the
-// details window for a custom action or an agent's suggestion.
+// create one, with a prompt to ask any agent for help). ActionPicker hosts it
+// in a modal layer, with the details window for a custom action.
 BorderSurface {
     id: root
     radius: Style.cornerRadius
@@ -42,13 +42,12 @@ BorderSurface {
     ]
     // The Custom tab's list starts with a row that opens the create page.
     readonly property var createItem: ({ label: "Create new action", icon: "󰐕", command: null, create: true, keywords: "",
-        detail: library.length ? "Your own command, or ask an agent" : "Saved ones show up here" })
+        detail: library.length ? "Your own command, with an agent's help if you like" : "Saved ones show up here" })
     readonly property var results: tab === "custom" ? [createItem].concat(Actions.filter(itemsFor(tab), query))
                                                     : Actions.filter(itemsFor(tab), query)
 
     signal picked(int index, var action)
     signal closed()
-    signal agentStarted()
     signal forget(string command)
     // The bar drawer (WheelDrawer): saveSlot and rename return "" or an error.
     property var drawer: null
@@ -56,29 +55,27 @@ BorderSurface {
     property var library: []
     readonly property var libraryItems: library.map(function(a) {
         return { label: a.label, icon: a.icon, command: a.command, description: a.description || "",
-                 scriptHash: a.scriptHash, detail: a.description || root.tidy(a.command), keywords: a.command, saved: true }
+                 detail: a.description || root.tidy(a.command), keywords: a.command, saved: true }
     })
     // The Custom tab's create page is showing.
     property bool creating: false
-    // The action in the details window (ActionPicker shows it): a custom
-    // action, or an agent's suggestion, which has not run; only Try it or
-    // Save it (both clicks) act on it.
+    // The custom action in the details window (ActionPicker shows it).
     property var details: null
-    property bool detailsSuggested: false
     property string detailsStatus: ""
+    // "try" or "save" while the details window asks to confirm a new action
+    // from the create page; "" for a saved custom action.
+    property string confirm: ""
 
-    // Agents found on PATH (ids from Actions.agents), and Custom tab feedback.
-    property var foundAgents: []
+    // Custom tab feedback.
     property string customStatus: ""
-    // The agent whose prompt is shown for a yes/no before it opens.
-    property string pendingAgent: ""
-    readonly property string pendingAgentLabel: (foundAgents.filter(function(a) { return a.id === pendingAgent })[0] || { label: "" }).label
+    // The slot a prompt was copied for: reopening it goes back to the create
+    // page, with the request, to paste the agent's answer.
+    property int askedSlot: -1
+    // What the user asked an agent for: the only thing of theirs the prompt carries.
+    property alias request: requestField.text
     readonly property string home: Quickshell.env("HOME")
-    // Always in the home folder, where the details window can show and pin scripts.
+    // Always in the home folder, where the details window can show scripts.
     readonly property string scriptsDir: home + Actions.scriptsFolder
-    // Omarchy installs agent launchers in ~/.local/bin, which the shell's own
-    // PATH may not include.
-    readonly property string agentPath: "PATH=\"$HOME/.local/bin:$PATH\"; "
 
     // A command as a list row shows it: the home folder as ~.
     function tidy(command) { return home && command.indexOf(home + "/") !== -1 ? command.split(home + "/").join("~/") : command }
@@ -98,20 +95,22 @@ BorderSurface {
         creating = false
         details = null
         detailsStatus = ""
-        pendingAgent = ""
         query = ""
         cursor = 0
         if (tab === "bindings") loadBindings()
         customStatus = ""
-        requestField.text = ""
-        // The create form starts from the slot's own command, if it has one.
-        var own = action.command ? action : { label: "", icon: "", command: "" }
-        labelField.text = own.label
-        iconField.text = own.icon
-        descriptionField.text = own.description || ""
-        commandField.text = own.command
+        // Create new action makes a new action, so it starts empty.
+        fill({ label: "", icon: "", description: "", command: "" })
         opened = true
         customScroll.contentY = 0
+        if (index === askedSlot) {
+            setTab("custom")
+            setCreating(true)
+            customStatus = "Copy the code block with Name, Icon, What it does and Command from the agent's answer, then Paste answer."
+            Qt.callLater(showAsk)
+            return
+        }
+        requestField.text = ""
         // Otherwise Apps, from the top (Keybindings may still have it).
         if (!revealCurrent()) {
             setTab("apps")
@@ -150,19 +149,6 @@ BorderSurface {
         if (revealIndex >= 0 && revealIndex < list.count) list.positionViewAtIndex(revealIndex, ListView.Center)
     }
 
-    // Opens on the Custom tab with the suggestion in the details window, which
-    // takes keyboard focus off every field (see ActionPicker), so keys still
-    // being typed in the agent's terminal can't edit or save it.
-    function suggest(index, action, suggested) {
-        var replacing = opened && details !== null && detailsSuggested
-        show(index, action)
-        awaitingBindings = ""
-        tab = "custom"
-        detailsSuggested = true
-        details = suggested
-        if (replacing) detailsStatus = "The agent sent a newer suggestion; this replaces the one you were reading."
-    }
-
     function close() {
         if (!opened) return
         opened = false
@@ -173,21 +159,56 @@ BorderSurface {
     function setCreating(on) {
         creating = on
         customStatus = ""
-        pendingAgent = ""
         if (on) customScroll.contentY = 0
         focusTab()
     }
 
     function showDetails(item) {
-        detailsSuggested = false
+        confirm = ""
         details = Actions.pick(item)
         detailsStatus = ""
     }
 
     function closeDetails() {
         details = null
+        confirm = ""
         detailsStatus = ""
         focusTab()
+    }
+
+    // The create page's action, as Save it or Try it would take it.
+    function formAction() {
+        var label = labelField.text.trim()
+        var command = commandField.text.trim()
+        return { label: label || "New action", icon: iconField.text.trim() || Actions.glyphFor(label, command),
+                 description: descriptionField.text.trim(), command: command }
+    }
+
+    // Try it and Save it first show the action in full (command, warnings,
+    // script) and ask; only Yes, a click, goes on.
+    function askTry() {
+        var action = formAction()
+        if (!action.command) { customStatus = run(""); return }
+        confirm = "try"
+        details = Actions.pick(action)
+        detailsStatus = ""
+    }
+
+    function askSave() {
+        if (!labelField.text.trim()) { labelField.forceActiveFocus(); return }
+        var action = formAction()
+        // An empty command only clears the slot; there is nothing to read.
+        if (!action.command) { keep(action); return }
+        confirm = "save"
+        details = Actions.pick(action)
+        detailsStatus = ""
+    }
+
+    function confirmed() {
+        var kind = confirm, action = details
+        closeDetails()
+        if (kind === "try") customStatus = run(action.command)
+        else if (kind === "save") keep(action)
     }
 
     // Reading binds re-runs hyprland.lua in Omarchy's sandbox on a cache miss
@@ -239,24 +260,13 @@ BorderSurface {
     }
 
     // Save it: on the slot and saved at once, and kept under Custom actions.
-    function saveCustom() {
-        var label = labelField.text.trim()
-        var command = commandField.text.trim()
-        if (!label) { labelField.forceActiveFocus(); return }
-        keep({ label: label, icon: iconField.text.trim() || Actions.glyphFor(label, command),
-               description: descriptionField.text.trim(), command: command })
-    }
-
     // Stays open, with the reason, when the drawer can't save it.
     function keep(action) {
         var chosen = Actions.pick(action)
         chosen.custom = true
         var refused = drawer ? drawer.saveSlot(slot, chosen) : "The wheel's drawer isn't available."
-        if (refused) {
-            if (details) detailsStatus = refused
-            else customStatus = refused
-            return
-        }
+        if (refused) { customStatus = refused; return }
+        if (slot === askedSlot) askedSlot = -1
         close()
     }
 
@@ -278,16 +288,6 @@ BorderSurface {
         detailsStatus = "Renamed."
     }
 
-    // A pinned action whose script changed: the version now on screen becomes the approved one.
-    function approveDetails(hash) {
-        var after = Actions.pick(details)
-        after.scriptHash = hash
-        var refused = drawer ? drawer.rename(details, after) : "The wheel's drawer isn't available."
-        if (refused) { detailsStatus = refused; return }
-        details = after
-        detailsStatus = "Approved. Its slot runs this version now."
-    }
-
     function removeDetails() {
         forget(details.command)
         closeDetails()
@@ -301,24 +301,41 @@ BorderSurface {
     }
 
     function prompt() {
-        return Actions.agentPrompt(slot + 1, current, requestField.text, scriptsDir)
+        return Actions.agentPrompt(requestField.text, scriptsDir)
     }
 
+    function fill(action) {
+        labelField.text = action.label
+        iconField.text = action.icon
+        descriptionField.text = action.description
+        commandField.text = action.command
+    }
+
+    // Scrolls to Ask an agent, for pasting the answer.
+    function showAsk() { customScroll.contentY = Math.max(0, Math.min(askHeader.y, custom.implicitHeight - customScroll.height)) }
+
+    // The agent's answer, copied whole: it fills the form, and nothing runs.
+    function pasteAnswer() {
+        if (!paster.running) paster.running = true
+    }
+
+    function fillFromAnswer(text) {
+        var action
+        try { action = Actions.parseAnswer(text) }
+        catch (e) { customStatus = e.message; return false }
+        fill(action)
+        customStatus = "Filled in from the agent's answer. Read it, then Try it or Save it."
+        customScroll.contentY = 0
+        return true
+    }
+
+    // The prompt can hold private text, so it goes to wl-copy on stdin, never
+    // on a command line, where other users can read it in the process list.
     function copyPrompt() {
-        Quickshell.execDetached(["wl-copy", prompt()])
-        customStatus = "Prompt copied. Paste it into any agent."
-    }
-
-    // Through Hyprland like the wheel's own commands, so the terminal does not
-    // inherit the shell's Qt environment. The agent starts in the scripts folder.
-    function askAgent(agent) {
-        var script = agentPath + 'mkdir -p "$1" && cd "$1" && exec "$2" "$3"'
-        var command = "omarchy-launch-tui --app-id=org.omarchy.hotkey-wheel-agent bash -c "
-            + Actions.shellQuote(script) + " _ " + Actions.shellQuote(scriptsDir) + " "
-            + Actions.shellQuote(agent) + " " + Actions.shellQuote(prompt())
-        Quickshell.execDetached(["hyprctl", "eval", "hl.exec_cmd(" + Actions.luaString(command) + ")"])
-        close()
-        agentStarted()
+        if (copier.running) return
+        copier.text = prompt()
+        copier.stdinEnabled = true
+        copier.running = true
     }
 
     onQueryChanged: { revealIndex = -1; cursor = 0; list.positionViewAtBeginning() }
@@ -333,13 +350,34 @@ BorderSurface {
     }
 
     Process {
-        running: true
-        command: ["bash", "-c", root.agentPath + 'for a in "$@"; do command -v "$a" >/dev/null && echo "$a"; done', "_"]
-            .concat(Actions.agents.map(function(a) { return a.id }))
-        stdout: StdioCollector { id: agentOutput; waitForEnd: true }
-        onExited: {
-            var found = agentOutput.text.split("\n")
-            root.foundAgents = Actions.agents.filter(function(a) { return found.indexOf(a.id) !== -1 })
+        id: copier
+        property string text: ""
+        command: ["bash", "-c", "exec wl-copy --type text/plain >/dev/null 2>&1"]
+        // Closing stdin is the end of the prompt.
+        onStarted: { write(text); stdinEnabled = false }
+        onExited: function(code, status) {
+            var copied = code === 0 && status === 0
+            if (copied) root.askedSlot = root.slot
+            root.customStatus = copied
+                ? "Prompt copied. Paste it into any agent. Its answer ends with a code block of four lines (Name to Command): copy that, open this slot again and Paste answer."
+                : "Couldn't copy the prompt."
+        }
+    }
+
+    // The clipboard comes back on stdout. Over 64 KB is refused rather than
+    // cut, so a command can't lose its end at the cut.
+    Process {
+        id: paster
+        command: ["bash", "-c", 'export LC_ALL=C
+text=$(wl-paste --no-newline --type text 2>/dev/null | head -c 65537; printf x)
+text=${text%x}
+(( ${#text} <= 65536 )) || exit 3
+printf "%s" "$text"']
+        stdout: StdioCollector { id: pasted; waitForEnd: true }
+        onExited: function(code) {
+            if (code === 3) root.customStatus = "The clipboard holds more than 64 KB. Copy just the agent's code block (Name to Command)."
+            else if (code === 0 && pasted.text.trim()) root.fillFromAnswer(pasted.text)
+            else root.customStatus = "The clipboard has no text. Copy the agent's code block (Name to Command) first."
         }
     }
 
@@ -370,8 +408,7 @@ BorderSurface {
         // Keys every tab shares; the search field handles list keys.
         Keys.onPressed: function(event) {
             if (event.key === Qt.Key_Escape) {
-                if (root.pendingAgent) root.pendingAgent = ""
-                else if (root.creating) root.setCreating(false)
+                if (root.creating) root.setCreating(false)
                 else root.close()
                 event.accepted = true
             }
@@ -527,7 +564,7 @@ BorderSurface {
             }
         }
 
-        // Create new action: your own command, or ask an agent. Scrolls on short screens.
+        // Create new action: your own command, with a prompt for any agent. Scrolls on short screens.
         Flickable {
             id: customScroll
             anchors { top: header.bottom; topMargin: Style.spacing.md; bottom: parent.bottom }
@@ -547,7 +584,8 @@ BorderSurface {
                     text: "Custom actions"
                     iconText: "󰁍"
                     foreground: Color.menu.text
-                    onClicked: root.setCreating(false)
+                    // Leaving on purpose, so the slot opens as usual again.
+                    onClicked: { root.askedSlot = -1; root.setCreating(false) }
                 }
                 Text {
                     text: "󰐕  Create new action"
@@ -569,7 +607,7 @@ BorderSurface {
                         foreground: Color.menu.text
                         placeholderText: "Name"
                         maximumLength: 64
-                        onAccepted: root.saveCustom()
+                        onAccepted: root.askSave()
                     }
                     TextField {
                         id: iconField
@@ -577,7 +615,7 @@ BorderSurface {
                         foreground: Color.menu.text
                         placeholderText: "Icon (auto)"
                         maximumLength: 16
-                        onAccepted: root.saveCustom()
+                        onAccepted: root.askSave()
                     }
                 }
                 Text {
@@ -592,7 +630,7 @@ BorderSurface {
                     foreground: Color.menu.text
                     placeholderText: "e.g. Turns the webcam's background blur on or off"
                     maximumLength: Actions.descriptionLimit
-                    onAccepted: root.saveCustom()
+                    onAccepted: root.askSave()
                 }
                 Text {
                     text: "Command"
@@ -606,7 +644,20 @@ BorderSurface {
                     foreground: Color.menu.text
                     placeholderText: "Command (empty disables the slot)"
                     maximumLength: 4096
-                    onAccepted: root.saveCustom()
+                    onAccepted: root.askSave()
+                }
+                // The details window's hints, before anything runs (Actions.warnings).
+                Repeater {
+                    model: root.creating ? Actions.warnings(commandField.text, "", root.home) : []
+                    Text {
+                        required property string modelData
+                        width: commandField.width
+                        text: "󰀦  " + modelData
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: Color.urgent
+                        font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
+                    }
                 }
                 Row {
                     spacing: Style.spacing.md
@@ -615,13 +666,13 @@ BorderSurface {
                         iconText: "󰆓"
                         bordered: true
                         foreground: Color.menu.text
-                        onClicked: root.saveCustom()
+                        onClicked: root.askSave()
                     }
                     Button {
                         text: "Try it"
                         iconText: "󰐊"
                         foreground: Color.menu.text
-                        onClicked: root.customStatus = root.run(commandField.text.trim())
+                        onClicked: root.askTry()
                     }
                     Button {
                         text: "Clear slot"
@@ -632,7 +683,7 @@ BorderSurface {
                 }
                 Text {
                     width: parent.width
-                    text: "Save it puts it on slot " + (root.slot + 1) + " right away and keeps it under Custom actions."
+                    text: "Try it and Save it first show you the command and its script to read. Save it puts it on slot " + (root.slot + 1) + " right away and keeps it under Custom actions."
                     wrapMode: Text.Wrap
                     color: Color.menu.text
                     opacity: 0.55
@@ -643,13 +694,14 @@ BorderSurface {
                 Rectangle { width: parent.width; height: 1; color: Color.menu.text; opacity: 0.15 }
 
                 Text {
+                    id: askHeader
                     text: "󰚩  Ask an agent"
                     color: Color.menu.text
                     font { family: Style.font.menuFamily; pixelSize: Style.font.body; bold: true }
                 }
                 Text {
                     width: parent.width
-                    text: "Its suggestion opens here with what it does, for you to read, try and save. The agent is told not to run it."
+                    text: "Describe what you want and copy the prompt into Claude Code, Codex or any other agent. The agent's answer ends with a code block of four lines, Name to Command: copy it, and Paste answer fills in the fields above. Read it, then Try it or Save it."
                     wrapMode: Text.Wrap
                     color: Color.menu.text
                     opacity: 0.7
@@ -660,84 +712,31 @@ BorderSurface {
                     width: parent.width
                     foreground: Color.menu.text
                     placeholderText: "What should this slot do? e.g. toggle webcam blur"
-                    onAccepted: root.foundAgents.length ? root.pendingAgent = root.foundAgents[0].id : root.copyPrompt()
+                    onAccepted: root.copyPrompt()
                 }
                 Row {
-                    visible: !root.pendingAgent
                     spacing: Style.spacing.md
-                    Repeater {
-                        model: root.foundAgents
-                        Button {
-                            required property var modelData
-                            text: "Open in " + modelData.label
-                            bordered: true
-                            foreground: Color.menu.text
-                            onClicked: root.pendingAgent = modelData.id
-                        }
-                    }
                     Button {
                         text: "Copy prompt"
                         iconText: "󰆏"
+                        bordered: true
+                        enabled: !copier.running
                         foreground: Color.menu.text
                         onClicked: root.copyPrompt()
                     }
-                }
-                // The exact prompt, read before anything opens. Sending takes a click.
-                Column {
-                    visible: root.pendingAgent.length > 0
-                    width: parent.width
-                    spacing: Style.spacing.md
-                    Text {
-                        width: parent.width
-                        text: "This is what " + root.pendingAgentLabel + " will get. Send it?"
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        color: Color.accent
-                        font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
-                    }
-                    Rectangle {
-                        width: parent.width
-                        height: Math.min(promptBody.implicitHeight + Style.spacing.md * 2, Style.space(260))
-                        radius: Style.cornerRadius
-                        color: Qt.rgba(0, 0, 0, 0.18)
-
-                        Flickable {
-                            anchors { fill: parent; margins: Style.spacing.md }
-                            contentHeight: promptBody.implicitHeight
-                            clip: true
-                            boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                            Text {
-                                id: promptBody
-                                width: parent.width
-                                text: root.pendingAgent ? root.prompt() : ""
-                                textFormat: Text.PlainText
-                                wrapMode: Text.Wrap
-                                color: Color.menu.text
-                                opacity: 0.8
-                                font { family: Style.font.family; pixelSize: Style.font.caption }
-                            }
-                        }
-                    }
-                    Row {
-                        spacing: Style.spacing.md
-                        Button {
-                            text: "Send to " + root.pendingAgentLabel
-                            bordered: true
-                            foreground: Color.menu.text
-                            onClicked: root.askAgent(root.pendingAgent)
-                        }
-                        Button {
-                            text: "Back"
-                            foreground: Color.menu.text
-                            onClicked: root.pendingAgent = ""
-                        }
+                    Button {
+                        text: "Paste answer"
+                        iconText: "󰆒"
+                        enabled: !paster.running
+                        foreground: Color.menu.text
+                        onClicked: root.pasteAnswer()
                     }
                 }
                 Text {
                     width: parent.width
                     visible: text.length > 0
                     text: root.customStatus
+                    textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     color: Color.accent
                     font { family: Style.font.menuFamily; pixelSize: Style.font.caption }

@@ -3,24 +3,17 @@ import Quickshell
 import Quickshell.Io
 import "PLUGIN_PATH" as Plugin
 import "ACTIONS_PATH" as Actions
-import "BUS_PATH" as Bus
 
 ShellRoot {
     id: root
     // The real bar drawer, never opened here (that would map its windows).
     Plugin.WheelDrawer { id: drawer }
-    // The details window: an agent's script, and a pipe it must not wait on.
-    property int savedClicks: 0
-    property string savedHash: ""
-    Plugin.ActionDetails {
-        id: details
-        suggested: true
-        onSaveIt: function(hash) { savedClicks++; savedHash = hash }
-    }
-    Plugin.ActionDetails { id: pipeDetails; suggested: true }
+    // The details window: a custom action's script, and a pipe it must not wait on.
+    Plugin.ActionDetails { id: details }
+    Plugin.ActionDetails { id: pipeDetails }
     // The picker card on its own (no window): it opens on the slot's tab.
     Plugin.PickerCard { id: card; width: 560; height: 620 }
-    Plugin.ActionDetails { id: latinDetails; suggested: true }
+    Plugin.ActionDetails { id: latinDetails }
     FileView { id: scriptA; path: Quickshell.env("HOME") + "/scripts/a.sh"; atomicWrites: true; printErrors: false }
     Plugin.HotkeyWheel {
         id: wheel
@@ -37,14 +30,18 @@ ShellRoot {
         path: Quickshell.env("XDG_CONFIG_HOME") + "/omarchy/extensions/hotkey-wheel.json"
         blockWrites: true
     }
-    // Stands in for the bar drawer: the overlay's propose IPC reaches it via Bus.
-    QtObject {
-        id: fakeDrawer
-        property string screenName: ""
-        property var received: null
-        function propose(index, action) { received = { index: index, action: action } }
-    }
     function check(ok, message) { if (!ok) throw new Error(message) }
+    // A create-form field's text, found by its placeholder (the ids are the card's own).
+    function cardText(name) {
+        var placeholder = name === "labelField" ? "Name" : "Command (empty disables the slot)"
+        var find = function(item) {
+            if (item.placeholderText === placeholder) return item
+            var kids = (item.children || []).concat(item.contentItem && item.contentItem !== item ? [item.contentItem] : [])
+            for (var i = 0; i < kids.length; ++i) { var hit = find(kids[i]); if (hit) return hit }
+            return null
+        }
+        return find(card).text
+    }
     Timer {
         interval: 200; running: true
         onTriggered: {
@@ -78,44 +75,15 @@ ShellRoot {
                 { label: "Big Cal", detail: "", keywords: "" }, { label: "Other", detail: "cal", keywords: "" }], "cal")
             check(found.length === 3 && found[0].label === "Calendar", "prefix matches first")
             check(Actions.glyphFor("Full width", "maximized") === Actions.glyphFor("fullscreen"), "name decides glyph")
-            check(wheel.propose(0, "X", "", "true", "Does a thing.").indexOf("error: slot") === 0, "slot range checked")
-            check(wheel.propose(2, "X", "", "  ", "Does a thing.").indexOf("error: the command is empty") === 0, "empty command refused")
-            check(wheel.propose(2, "", "", "true", "Does a thing.").indexOf("error: Slot 2") === 0, "label required")
-            Bus.removeDrawer(drawer)
-            check(wheel.propose(2, "X", "", "true", "Does a thing.").indexOf("not on the bar") !== -1, "no drawer explained")
-            Bus.addDrawer(fakeDrawer)
-            check(wheel.propose(2, "Webcam blur", "", "toggle-blur", "Does a thing.").indexOf("ok:") === 0, "proposal accepted")
-            check(fakeDrawer.received.index === 1 && fakeDrawer.received.action.icon === Actions.glyphFor("webcam")
-                  && fakeDrawer.received.action.command === "toggle-blur"
-                  && fakeDrawer.received.action.description === "Does a thing.", "proposal reaches the drawer with a glyph")
-            check(wheel.propose(2, "X", "", "true", "  ").indexOf("what it does") !== -1, "description required")
-            check(wheel.propose(2, "X", "", "true", "Line one.\nLine two.").indexOf("ok:") === 0, "description may wrap")
-            check(wheel.propose(2, "X", "", "true", "Safe \u202eevil").indexOf("bidi") !== -1, "bidi in description refused")
-            check(wheel.propose(2, "X", "", "true", new Array(602).join("a")).indexOf("600") !== -1, "long description refused")
             check(Actions.pick({ label: " A ", icon: "a", command: " c ", description: " Does. ", custom: true }).description === "Does."
                   && Actions.pick({ label: "A", icon: "a", command: "c", description: "" }).description === undefined, "pick keeps a description")
+            // Pins from older versions are dropped, not fatal.
             var pin = new Array(65).join("a")
-            check(Actions.runCommand({ label: "L", command: "echo hi" }, "/h", "/home/u") === "echo hi"
-                  && Actions.runCommand({ label: "L", command: "~/s/a.sh x" }, "/h", "/home/u") === "~/s/a.sh x"
-                  && Actions.runCommand({ label: "L", command: "~/s/a.sh x", scriptHash: pin }, "/h", "/home/u")
-                     === "'/h' 'checked' '" + pin + "' '/home/u/s/a.sh' 'L' '~/s/a.sh x'", "pinned scripts run checked")
-            var badPin = false
-            try { Actions.validateAction({ label: "L", icon: "l", command: "c", scriptHash: "nope" }, 0) } catch (e) { badPin = true }
-            check(badPin && Actions.pick({ label: "L", icon: "l", command: "c", scriptHash: pin }).scriptHash === pin
-                  && Actions.pick({ label: "L", icon: "l", command: "c", scriptHash: "x" }).scriptHash === undefined, "pins validated")
-            var sf = "/home/u/.config/omarchy/extensions/hotkey-wheel-scripts/"
-            check(Actions.uncheckedFile("bash -- " + sf + "payload", "/home/u") !== ""
-                  && Actions.uncheckedFile("/usr/bin/bash " + sf + "payload", "/home/u") !== ""
-                  && Actions.uncheckedFile("sh < " + sf + "payload", "/home/u") !== ""
-                  && Actions.uncheckedFile(sf + "a.sh; sh " + sf + "stage2", "/home/u").indexOf("stage2") !== -1
-                  && Actions.uncheckedFile("bash \"$HOME/.config/omarchy/extensions/hotkey-wheel-scripts/x\"", "/home/u") !== ""
-                  && Actions.uncheckedFile(sf + "a.sh --flag", "/home/u") === ""
-                  && Actions.uncheckedFile("python3 " + sf + "a.py x", "/home/u") === ""
-                  && Actions.uncheckedFile("omarchy-toggle-nightlight", "/home/u") === "", "unchecked script files")
+            check(Actions.validateAction({ label: "L", icon: "l", command: "c", scriptHash: pin }, 0).scriptHash === undefined
+                  && Actions.validateAction({ label: "L", icon: "l", command: "c", scriptHash: "nope" }, 0).command === "c"
+                  && Actions.pick({ label: "L", icon: "l", command: "c", scriptHash: pin }).scriptHash === undefined, "old pins dropped")
             check(Actions.scriptPath("\"~/s/a.sh\"", "/home/u") === "" && Actions.scriptPath("'~/s/a.sh'", "/home/u") === "",
                   "quoted tilde is not home")
-            check(Actions.runCommand({ label: "L", command: "echo $(cat x)", scriptHash: pin }, "/h", "/home/u").indexOf("'checked' '" + pin + "' ''") !== -1,
-                  "a pin without a script fails closed")
             check(Actions.scriptPath("bash ~/s/run.sh", "/home/u") === "/home/u/s/run.sh"
                   && Actions.scriptPath("python3 '/home/u/a b.py'", "/home/u") === "/home/u/a b.py"
                   && Actions.scriptPath("bash -c 'x'", "/home/u") === "", "interpreter scripts")
@@ -129,26 +97,36 @@ ShellRoot {
                   && warned("base64 -w0 -d x", "").indexOf("decodes") !== -1 && warned("curl x | /bin/sh", "").indexOf("internet") !== -1
                   && warned("~/s/a.sh", "source ~/lib.sh").indexOf("other files") !== -1, "more warnings")
             check(Actions.hasHiddenChars("echo \u202ex") && !Actions.hasHiddenChars("#!/bin/sh\n\techo hi\r\n"), "hidden chars in scripts")
-            Bus.removeDrawer(fakeDrawer)
-            Bus.addDrawer(drawer)
-            check(wheel.propose(2, "X", "", "a\u00adb", "Does a thing.").indexOf("invisible") !== -1, "soft hyphen refused")
-            check(Actions.validateProposal({ label: "Love", icon: "\u2764\ufe0f", command: "true", description: "Shows love." }, 0).icon === "\u2764\ufe0f",
-                  "emoji icons allowed")
             check(Actions.bindingCommand("killactive", "") === "hyprctl dispatch 'killactive'"
                   && Actions.bindingCommand("exec", "") === "", "argumentless dispatchers")
-            check(wheel.propose(2, "X", "", "echo \u202eevil", "Does a thing.").indexOf("bidi") !== -1, "bidi override refused")
-            check(wheel.propose(2, "X", "", "a\nb", "Does a thing.").indexOf("invisible") !== -1, "newline refused")
-            check(wheel.propose(2, "X", "", new Array(1002).join("a"), "Does a thing.").indexOf("1000") !== -1, "long command refused")
             check(Actions.scriptPath("~/s/run.sh --x", "/home/u") === "/home/u/s/run.sh"
                   && Actions.scriptPath("'/home/u/a b.sh' --x", "/home/u") === "/home/u/a b.sh"
                   && Actions.scriptPath("$HOME/s/a.sh", "/home/u") === "/home/u/s/a.sh"
+                  && Actions.scriptPath('bash "$HOME/s/a.sh"', "/home/u") === "/home/u/s/a.sh"
+                  && Actions.scriptPath('"${HOME}/s/a.sh" --x', "/home/u") === "/home/u/s/a.sh"
+                  && Actions.scriptPath('"$HOME/$x.sh"', "/home/u") === ""
                   && Actions.scriptPath("~/s/run.sh;rm x", "/home/u") === "/home/u/s/run.sh"
                   && Actions.scriptPath("/home/u/../etc/x", "/home/u") === ""
                   && Actions.scriptPath("/usr/bin/foo", "/home/u") === "", "script path")
-            var asked = Actions.agentPrompt(3, { label: "Files", command: "xdg-open ~" }, "blur my webcam", "/s")
-            check(asked.indexOf("propose 3 ") !== -1 && asked.indexOf("blur my webcam") !== -1
-                  && asked.indexOf("Files → xdg-open ~") !== -1 && asked.indexOf("/s/") !== -1, "agent prompt")
-            check(asked.indexOf("Don't run the command") !== -1 && asked.indexOf("Test it") === -1, "agents told not to run it")
+            var asked = Actions.agentPrompt("blur my webcam", "/s")
+            check(asked.indexOf("Command: the command") !== -1 && asked.indexOf("blur my webcam") !== -1 && asked.indexOf("propose") === -1
+                  && !/slot \d|currently/.test(asked) && asked.indexOf("/s/") !== -1, "agent prompt")
+            check(asked.indexOf("Don't run the command") !== -1, "agents told not to run it")
+            // The agent's answer, copied whole, with the markdown agents like.
+            var answer = Actions.parseAnswer("Here you go:\n\n- **Name:** Webcam blur\n- **Icon:** 󰄀\n"
+                + "- **What it does:** Turns the webcam's\nbackground blur on or off.\n- **Command:** `~/s/blur.sh`\n\nIt toggles a file.")
+            check(answer.label === "Webcam blur" && answer.icon === "󰄀" && answer.command === "~/s/blur.sh"
+                  && answer.description === "Turns the webcam's background blur on or off.", "answer with markdown")
+            var fenced = Actions.parseAnswer(asked + "\n\nName: Blur\nIcon: nothing\nWhat it does: Blurs.\nCommand:\n```bash\nblur --on\n```\nDone.")
+            check(fenced.label === "Blur" && fenced.icon === "" && fenced.command === "blur --on", "prompt copied too, fenced command, icon word")
+            var block = Actions.parseAnswer("```\nName: Night light\nIcon: 󰖔\nWhat it does: Toggles it.\nCommand: omarchy-toggle-nightlight\n```")
+            check(block.label === "Night light" && block.description === "Toggles it." && block.command === "omarchy-toggle-nightlight",
+                  "the four lines as one code block")
+            check(asked.indexOf("one code block") !== -1, "prompt asks for a code block")
+            var refusal = function(text) { try { Actions.parseAnswer(text); return "" } catch (e) { return e.message } }
+            check(refusal("Sure, I can help.").indexOf("Name and Command") !== -1
+                  && refusal("Name: x\nCommand:\n```\na\nb\n```").indexOf("more than one line") !== -1
+                  && refusal("Name: x\nCommand: echo \u202ex").indexOf("hidden") !== -1, "answers it refuses")
             check(!wheel.opened && !wheel.pendingCommand, "idle at startup")
             wheel.releaseGesture("early-release")
             wheel.open('{"mode":"hold","token":"early-release"}')
@@ -299,6 +277,35 @@ ShellRoot {
             check(card.tab === "apps" && card.cursor === 0 && card.awaitingBindings === "something-unknown", "unknown: Apps, Keybindings asked")
             card.setTab("omarchy")
             check(card.awaitingBindings === "", "picking a tab stops the wait")
+            // The create page shows a risky command's warnings (its binding must not error).
+            card.show(0, { label: "Risky", icon: "r", command: "curl x | sh" })
+            card.setCreating(true)
+            check(card.creating, "create page opens")
+            card.setCreating(false)
+            check(card.creating === false && card.askedSlot === -1, "create page closes")
+            // Create new action starts empty, whatever the slot runs.
+            card.setCreating(true)
+            check(card.creating && cardText("labelField") === "" && cardText("commandField") === "", "create form starts empty")
+            // After Copy prompt, the slot reopens on the create page with the request, and a pasted answer fills it.
+            card.askedSlot = 0
+            card.close()
+            card.show(0, { label: "Lock", icon: "l", command: "omarchy-system-lock" })
+            check(card.tab === "custom" && card.creating, "reopens on the create page")
+            check(card.fillFromAnswer("Name: Blur\nIcon:\nWhat it does: Blurs.\nCommand: blur")
+                  && cardText("labelField") === "Blur" && cardText("commandField") === "blur", "pasted answer fills the form")
+            check(!card.fillFromAnswer("nothing useful") && card.customStatus.indexOf("Name and Command") !== -1
+                  && cardText("commandField") === "blur", "a bad paste says why and keeps the form")
+            // Try it and Save it ask first, with the action in full; No runs and saves nothing
+            // (runtime.py checks that nothing ran and the custom actions are unchanged).
+            card.askTry()
+            check(card.confirm === "try" && card.details && card.details.command === "blur", "Try it asks first")
+            card.closeDetails()
+            card.askSave()
+            check(card.confirm === "save" && card.details.label === "Blur" && card.opened, "Save it asks first")
+            card.closeDetails()
+            check(card.confirm === "" && card.details === null && card.opened && card.creating, "No goes back to the form")
+            card.askedSlot = -1
+            card.setCreating(false)
             card.show(0, { label: "Empty", icon: "e", command: "" })
             check(card.tab === "apps" && card.cursor === 0 && card.awaitingBindings === "", "empty slot opens on Apps")
             // The window sizes the list after it opens: the row is scrolled to then.
@@ -337,7 +344,6 @@ ShellRoot {
             check(drawer.draftSlots.length === 12 && drawer.draft.actions[4].label === drawer.saved.actions[4].label,
                   "12 slots bring them back and add presets")
             drawer.setSlots(8)
-            check(drawer.propose(9, { label: "X", icon: "x", command: "x" }).indexOf("hidden") !== -1, "hidden slot refused")
             drawer.discard()
             // The trigger is written at once, keeping the draft a draft.
             drawer.assign(0, { label: "Draft", icon: "d", command: "draft" })
@@ -436,50 +442,53 @@ ShellRoot {
     Timer {
         id: detailsRead; interval: 1000
         onTriggered: {
-            check(details.scriptState === "ok" && details.scriptContents === "#!/bin/sh\necho reviewed\n" && details.armed,
-                  "script read in full")
-            check(pipeDetails.scriptState === "hidden" && !pipeDetails.reviewable, "a pipe is not read and can't be saved")
-            check(latinDetails.scriptState === "hidden" && !latinDetails.reviewable
-                  && latinDetails.scriptNote.indexOf("UTF-8") !== -1, "text that can't be shown faithfully can't be saved")
-            // Changed after it was shown: the click is refused and the new one shown.
+            check(details.scriptState === "ok" && details.scriptContents === "#!/bin/sh\necho reviewed\n", "script read in full")
+            check(pipeDetails.scriptState === "hidden" && pipeDetails.scriptNote.indexOf("plain file") !== -1, "a pipe is not read")
+            check(latinDetails.scriptState === "hidden" && latinDetails.scriptNote.indexOf("UTF-8") !== -1,
+                  "text that can't be shown faithfully isn't shown")
+            // Opened again after the script changed: the new version is shown.
             scriptA.setText("#!/bin/sh\necho swapped\n")
-            detailsSwap.start()
-        }
-    }
-    Timer {
-        id: detailsSwap; interval: 300
-        onTriggered: {
-            details.act("save")
+            details.action = { label: "A", icon: "a", command: Quickshell.env("HOME") + "/scripts/a.sh", description: "Echoes." }
             detailsSwapped.start()
         }
     }
     Timer {
         id: detailsSwapped; interval: 1000
         onTriggered: {
-            check(root.savedClicks === 0 && details.notice.indexOf("changed") !== -1
-                  && details.scriptContents.indexOf("swapped") !== -1 && details.armed, "changed script refused and shown")
-            details.act("save")
-            detailsSaved.start()
-        }
-    }
-    Timer {
-        id: detailsSaved; interval: 500
-        onTriggered: {
-            check(root.savedClicks === 1 && Actions.validHash(root.savedHash), "unchanged script saves, pinned")
-            // A newer suggestion arriving while a click's read runs takes the click with it.
-            // Its read finishing before the new one starts is the worst order.
-            var shown = details.scriptContents
-            details.act("save")
+            check(details.scriptState === "ok" && details.scriptContents.indexOf("swapped") !== -1, "script read again")
+            // A read for the action it showed before is dropped.
             details.action = { label: "B", icon: "b", command: Quickshell.env("HOME") + "/scripts/a.sh --other", description: "Other." }
-            details.scriptRead(0, "ok " + root.savedHash + "\n" + shown)
+            details.scriptRead(0, "ok\nstale")
             detailsReplaced.start()
         }
     }
     Timer {
         id: detailsReplaced; interval: 1000
         onTriggered: {
-            check(root.savedClicks === 1 && details.pendingAct === "" && details.scriptState === "ok",
-                  "a click never lands on the suggestion that replaced it")
+            check(details.scriptState === "ok" && details.scriptContents.indexOf("swapped") !== -1, "a stale read is dropped")
+            // Copy prompt hands the prompt to wl-copy on stdin, with the request
+            // but not the slot's current command.
+            card.show(1, { label: "Secret", icon: "s", command: "echo SLOT-MARKER-3" })
+            card.request = "blur CMD-MARKER-7"
+            card.copyPrompt()
+            promptCopied.start()
+        }
+    }
+    Timer {
+        id: promptCopied; interval: 1500
+        onTriggered: {
+            check(card.customStatus.indexOf("Prompt copied") === 0, "prompt copied: " + card.customStatus)
+            // Settings or custom actions that didn't load are never written over.
+            drawer.settingsBroken = true
+            drawer.setTrigger("middle")
+            check(drawer.saving === null && drawer.configError.indexOf("didn't load") !== -1
+                  && drawer.saveSlot(0, { label: "X", icon: "x", command: "x" }).indexOf("didn't load") !== -1, "broken settings kept")
+            drawer.settingsBroken = false
+            drawer.libraryBroken = true
+            var kept = JSON.stringify(drawer.library)
+            drawer.forget(drawer.library[0].command)
+            check(JSON.stringify(drawer.library) === kept, "broken custom actions kept")
+            drawer.libraryBroken = false
             console.log("HOTKEY_WHEEL_OK"); Qt.quit()
         }
     }

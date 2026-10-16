@@ -2,7 +2,6 @@ import QtQuick
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
-import "Actions.js" as Actions
 
 // Modal layer for the picker card and its details window. Clicking outside
 // the card closes only the picker, so the drawer underneath stays open;
@@ -17,11 +16,9 @@ Item {
 
     signal picked(int index, var action)
     signal closed()
-    signal agentStarted()
     signal forget(string command)
 
     function show(index, action) { card.show(index, action) }
-    function suggest(index, action, suggestion) { card.suggest(index, action, suggestion) }
     function close() { card.close() }
 
     PanelWindow {
@@ -46,7 +43,6 @@ Item {
             onPicked: function(index, action) { root.picked(index, action) }
             onClosed: root.closed()
             library: root.library
-            onAgentStarted: root.agentStarted()
             onForget: function(command) { root.forget(command) }
             drawer: root.drawer
             // Only the details window takes keys and clicks while it is open.
@@ -67,17 +63,12 @@ Item {
             width: Math.min(Style.space(620), window.width - Style.gapsOut * 2)
             height: Math.min(implicitHeight, Style.space(720), window.height - Style.gapsOut * 2)
             action: card.details
-            suggested: card.detailsSuggested
             slot: card.slot
+            confirm: card.confirm
+            onConfirmed: card.confirmed()
             status: card.detailsStatus
             onTryIt: card.detailsStatus = card.run(card.details.command)
             onUse: card.useDetails()
-            onSaveIt: function(hash) {
-                var action = Actions.pick(card.details)
-                if (hash) action.scriptHash = hash
-                card.keep(action)
-            }
-            onApprove: function(hash) { card.approveDetails(hash) }
             onRemove: card.removeDetails()
             onRenamed: function(action) { card.renameDetails(action) }
             onCloseRequested: card.closeDetails()

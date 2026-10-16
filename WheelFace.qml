@@ -7,7 +7,6 @@ Item {
     property real radius: Style.space(218)
     property var actions: []
     property int selected: -1
-    property bool holding: false
     // Drawer copy: slots are clicked to be changed, not run.
     property bool editing: false
     // Slot being dragged in the drawer, drawn faded; -1 when none.

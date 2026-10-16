@@ -105,63 +105,23 @@ function validateAction(action, index) {
     var description = action.description === undefined ? "" : action.description
     if (typeof description !== "string" || description.length > descriptionLimit)
         throw new Error("Slot " + (index + 1) + ": the description must be text of at most " + descriptionLimit + " characters.")
-    if (action.scriptHash !== undefined && !validHash(action.scriptHash))
-        throw new Error("Slot " + (index + 1) + ": scriptHash must be a SHA-256 in hex.")
+    // Older versions pinned scripts with a scriptHash; it is dropped.
     var out = { label: action.label.trim(), icon: action.icon, command: action.command.trim() }
     if (description.trim()) out.description = description.trim()
-    if (action.scriptHash) out.scriptHash = action.scriptHash
     return out
 }
 
-// An action saved from a reviewed script pins it: scriptHash is the SHA-256 of
-// the script file as the user read it. The wheel then runs it through the
-// helper, which checks the file first and, if it changed, runs nothing and
-// says so (see runCommand and `hotkey-wheel checked`).
-function validHash(hash) { return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) }
-
-// What the wheel hands to Hyprland for a slot.
-// A pin whose script can't be found in the command fails closed: the helper
-// gets no script, refuses, and says so.
-function runCommand(action, helper, home) {
-    if (!action.scriptHash) return action.command
-    var script = scriptPath(action.command, home)
-    return [helper, "checked", action.scriptHash, script, action.label, action.command].map(shellQuote).join(" ")
-}
-
-// Agents write their scripts in this folder, so a suggestion may only use a
-// file there as the script the details window shows and pins: the command's
-// first word, or the word after an interpreter. Any other mention of the
-// folder (another script, `bash -- file`, `sh < file`, a full interpreter
-// path) is returned, and the suggestion can't be tried or saved.
-var scriptsFolder = "/.config/omarchy/extensions/hotkey-wheel-scripts"
-
-function uncheckedFile(command, home) {
-    var text = String(command || "").trim()
-    var shown = scriptPath(text, home)
-    var rest = text
-    if (shown) {
-        var lead = interpreters.exec(text)
-        var after = lead ? text.slice(lead[0].length) : text
-        var word = /^('[^']*'|"[^"]*"|\S+)/.exec(after)
-        rest = after.slice(word ? word[0].length : 0)
-    }
-    var folders = [home + scriptsFolder, "~" + scriptsFolder, "$HOME" + scriptsFolder, "${HOME}" + scriptsFolder, "hotkey-wheel-scripts/"]
-    for (var i = 0; i < folders.length; ++i) {
-        var at = rest.indexOf(folders[i])
-        if (at !== -1) return ((/\S+$/.exec(rest.slice(0, at)) || [""])[0] + rest.slice(at).split(/[\s;&|<>()"']/)[0]).replace(/^["'<]+/, "")
-    }
-    return ""
-}
-
 // What an action does when picked, in plain words: optional, shown in the
-// picker's details window. Agents must send one with a suggestion.
+// picker's details window.
 var descriptionLimit = 600
+
+// Where the agent prompt asks for scripts, in the home folder.
+var scriptsFolder = "/.config/omarchy/extensions/hotkey-wheel-scripts"
 
 // An action as the picker and drawer keep it: only what validateAction keeps.
 function pick(action) {
     var out = { label: String(action.label).trim(), icon: String(action.icon), command: String(action.command).trim() }
     if (action.description && String(action.description).trim()) out.description = String(action.description).trim()
-    if (validHash(action.scriptHash)) out.scriptHash = action.scriptHash
     return out
 }
 
@@ -188,8 +148,8 @@ function remember(list, added) {
 
 function forget(list, command) { return list.filter(function(a) { return a.command !== command }) }
 
-// Control, zero-width and bidi-override characters can make a command look
-// different from what it runs, so suggestions from outside may not use them.
+// Control, zero-width and bidi-override characters can make a script look
+// different from what it runs, so the details window warns about them.
 // Covers C0/C1 controls and Unicode's default-ignorable and bidi formatting
 // characters, including tag characters (U+E0000 block, as surrogate pairs).
 var hiddenChars = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u061c\\u115f\\u1160\\u17b4\\u17b5"
@@ -198,19 +158,6 @@ var hiddenChars = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u06
 
 // Text a person reads (a script) with hidden characters besides tabs and line breaks.
 function hasHiddenChars(text) { return hiddenChars.test(String(text || "").replace(/[\t\r\n]/g, " ")) }
-
-// Stricter than validateAction: for suggestions the user has to read before saving.
-function validateProposal(action, index) {
-    var checked = validateAction(action, index)
-    // The description may have line breaks; nothing else hidden.
-    if (hiddenChars.test(checked.label + " " + checked.command + " " + (checked.description || "").replace(/\r?\n/g, " ")))
-        throw new Error("Slot " + (index + 1) + ": control, invisible or bidi characters are not allowed.")
-    if (!checked.command) throw new Error("the command is empty.")
-    if (!checked.description) throw new Error("say what it does when picked (the description is empty).")
-    if (checked.command.length > 1000)
-        throw new Error("the command is longer than 1000 characters; put it in a script and run that.")
-    return checked
-}
 
 // The script a command runs, when its first word (or the word after an
 // interpreter such as bash or python3) is a plain path in the home folder, so
@@ -223,7 +170,7 @@ function scriptPath(command, home) {
     var text = String(command || "").trim()
     var lead = interpreters.exec(text)
     if (lead) text = text.slice(lead[0].length)
-    var m = /^'([^']*)'(?=[\s;&|]|$)/.exec(text) || /^"([^"$`\\]*)"(?=[\s;&|]|$)/.exec(text)
+    var m = /^'([^']*)'(?=[\s;&|]|$)/.exec(text) || /^"((?:\$HOME\/|\$\{HOME\}\/)?[^"$`\\]*)"(?=[\s;&|]|$)/.exec(text)
         || /^([^\s'"\\;&|<>()`*?\[\]{}!#]+)(?=[\s;&|]|$)/.exec(text)
     if (!m || !home) return ""
     var path = m[1]
@@ -231,7 +178,8 @@ function scriptPath(command, home) {
     // As the shell sees it: nothing expands in single quotes, ~ only unquoted.
     if (quote !== "'") {
         if (quote !== '"' && path.indexOf("~/") === 0) path = home + path.slice(1)
-        else if (quote !== '"' && path.indexOf("$HOME/") === 0) path = home + path.slice(5)
+        else if (path.indexOf("$HOME/") === 0) path = home + path.slice(5)
+        else if (quote === '"' && path.indexOf("${HOME}/") === 0) path = home + path.slice(7)
         if (/^~|\$/.test(path)) return ""
     }
     return path.indexOf(home + "/") === 0 && path.indexOf("/../") === -1 ? path : ""
@@ -280,11 +228,11 @@ function warnings(command, scriptText, home) {
                 out.push((t === 0 ? "The command: " : "The script: ") + warningChecks[i][1])
                 break
             }
-    // Other possible scripts, which this window doesn't show or pin.
+    // Other possible scripts, which the details window doesn't show.
     var shown = scriptPath(command, home)
     var words = String(command || "").split(/[\s;&|()<>"'`]+/)
     for (var w = 0; w < words.length; ++w) {
-        var word = words[w].replace(/^~\//, home + "/").replace(/^\$HOME\//, home + "/")
+        var word = words[w].replace(/^~\//, home + "/").replace(/^\$\{?HOME\}?\//, home + "/")
         if (/\.(sh|bash|zsh|py|pl|rb|js|lua)$/.test(word) && word !== shown) {
             out.push("The command mentions " + words[w] + ", another possible script that isn't shown or checked here.")
             break
@@ -441,35 +389,79 @@ function filter(items, query) {
     return first.concat(rest)
 }
 
-// --- Agents -----------------------------------------------------------------
+// --- Agent prompt -----------------------------------------------------------
 
-// Coding agents the picker can open in a terminal, found on PATH.
-var agents = [
-    { id: "claude", label: "Claude Code" },
-    { id: "codex", label: "Codex" }
-]
-
-// A self-contained request: the agent starts with no other context. It ends
-// with the propose IPC, so the suggestion lands in the picker for the user to
-// read and try. The agent must not run it first.
-function agentPrompt(slotNumber, current, request, scriptsDir) {
-    var now = current && current.command ? current.label + " → " + current.command : "nothing (empty slot)"
+// A self-contained request to paste into any agent: it starts with no other
+// context. Its answer is pasted into the Create new action form by hand.
+function agentPrompt(request, scriptsDir) {
     var wish = String(request || "").trim() || "(ask me what I'd like)"
     return [
-        "I'd like to change slot " + slotNumber + " of my Hotkey Wheel. It's an Omarchy shell plugin: I hold a mouse button, point at one of its slots and release, and it runs that slot's shell command through Hyprland, like a keybinding's exec.",
+        "I'd like a new action for my Hotkey Wheel. It's an Omarchy shell plugin: I hold a mouse button, point at one of its slots and release, and it runs that slot's shell command through Hyprland, like a keybinding's exec.",
         "",
-        "What I want slot " + slotNumber + " to do: " + wish,
-        "It currently runs: " + now,
+        "What I want it to do: " + wish,
         "",
         "Please:",
         "1. Work out a shell command that does this on my machine (Omarchy on Arch Linux, Hyprland with a Lua config, Wayland). Prefer commands that are already installed, such as omarchy-* scripts, and check that they exist. Ask me before installing anything.",
-        "2. If it takes more than one line, write a new executable script in " + scriptsDir + "/ and use its full path as the command. Give it a new file name; never change or overwrite a file that is already there, because my saved slots may run it and the change would apply without my review. Keep it a plain-text script under 128 KB so I can read all of it. Don't use sudo and don't download code to run; if it needs either, tell me instead of suggesting it.",
-        "3. Don't run the command or the script yourself, not even to test it: I haven't approved it yet, and the wheel lets me try it before I use it. Checking that programs exist (command -v, --help, man pages) is fine.",
-        "4. Send it to the wheel with this command. Don't edit the wheel's settings or custom-actions files yourself:",
-        "   omarchy-shell io.github.erikrjohansson.hotkey-wheel propose " + slotNumber + " \"<label>\" \"<icon>\" \"<command>\" \"<what it does>\"",
-        "   The label is a short name (max 64 characters). The icon is one Nerd Font glyph, or \"\" to let the wheel pick one. \"What it does\" is one to three plain sentences for me (max " + descriptionLimit + " characters): what happens when I pick this slot, and anything it leaves running or changes for good. The reply says whether it was accepted.",
-        "5. Tell me the same in a sentence or two. The suggestion opens in a window on the wheel with your description, the command and any script in full, where I can try it and choose whether to save it. Nothing runs or changes until I do.",
-        "",
-        "To see the current slots: omarchy-shell io.github.erikrjohansson.hotkey-wheel slots"
+        "2. If it takes more than one line, write a new executable script in " + scriptsDir + "/ and use its full path as the command. Give it a new file name and leave files already there alone. Keep it a plain-text script under 128 KB, so the wheel can show all of it. Don't ask for administrator rights and don't download code to run; if it needs either, tell me instead of suggesting it.",
+        "3. Don't run the command or the script yourself: I'll try it from the wheel. Checking that programs exist (command -v, --help, man pages) is fine.",
+        "4. Don't edit the wheel's settings or custom-actions files yourself. End your answer with these four lines together in one code block, for me to copy into the wheel's Create new action form:",
+        "   Name: a short name (max 64 characters)",
+        "   Icon: one Nerd Font glyph, or nothing to let the wheel pick one",
+        "   What it does: one to three plain sentences on what happens when I pick it, and anything it leaves running or changes for good",
+        "   Command: the command, on one line"
     ].join("\n")
+}
+
+// The agent's answer (see agentPrompt): its Name, Icon, What it does and
+// Command lines, for the Create new action form, copied as the code block
+// they come in or with the answer around them. Tolerates markdown (bullets,
+// bold keys, `code`, a fenced block under a key) and prose around the lines; when a key appears more than once (the prompt was copied
+// too), the last one wins. Throws with what to tell the user.
+var answerKeys = { "name": "label", "icon": "icon", "what it does": "description", "command": "command" }
+
+function parseAnswer(text) {
+    var found = {}, key = "", fence = false
+    var lines = String(text || "").replace(/\r\n?/g, "\n").split("\n")
+    for (var i = 0; i < lines.length; ++i) {
+        var line = lines[i].trim()
+        if (/^(```|~~~)/.test(line)) {
+            fence = !fence
+            // Prose after a closed block isn't part of the value.
+            if (!fence) key = ""
+            continue
+        }
+        var match = /^(?:[-*•]\s+|\d+[.)]\s+)?(?:\*\*|__)?(name|icon|what it does|command)(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*)$/i.exec(line)
+        if (match) {
+            key = answerKeys[match[1].toLowerCase()]
+            found[key] = match[2] ? [unwrap(match[2])] : []
+        }
+        // A blank line ends a value, unless the value is still to come.
+        else if (!line) { if (!fence && key && found[key].length) key = "" }
+        else if (key) found[key].push(fence ? line : unwrap(line))
+    }
+    if (!found.command || !found.label)
+        throw new Error("Couldn't find the Name and Command lines in the clipboard. Copy the agent's code block (Name to Command) and try again.")
+    if (found.command.length !== 1)
+        throw new Error(found.command.length ? "The command is more than one line. Ask the agent for one line, or a script."
+                                             : "The answer has no command.")
+    var icon = (found.icon || []).join(" ")
+    var action = {
+        label: found.label.join(" "),
+        // Words ("nothing", "none", "auto") mean the wheel picks one.
+        icon: /[A-Za-z]{2,}/.test(icon) ? "" : icon,
+        description: (found.description || []).join(" "),
+        command: found.command[0]
+    }
+    if (!action.label || !action.command) throw new Error("The answer's name or command is empty.")
+    if (action.label.length > 64 || action.icon.length > 16 || action.description.length > descriptionLimit || action.command.length > 4096)
+        throw new Error("The answer is longer than the form takes. Ask the agent for a shorter name, description or command.")
+    if (hasHiddenChars(action.label + action.icon + action.description + action.command))
+        throw new Error("The answer has hidden characters, so it may not run what it shows. Ask the agent again.")
+    return action
+}
+
+// `code` or **bold** around a whole value.
+function unwrap(value) {
+    var match = /^`([^`]+)`$/.exec(value) || /^\*\*(.+)\*\*$/.exec(value)
+    return match ? match[1].trim() : value
 }

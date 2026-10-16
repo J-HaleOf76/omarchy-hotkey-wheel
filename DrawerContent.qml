@@ -181,7 +181,7 @@ Column {
             readonly property var taken: drawer.saved.enabled ? drawer.conflicts[drawer.saved.trigger] : null
             visible: !!taken || drawer.setupError.length > 0
             text: drawer.setupError || (taken ? Actions.triggerLabel(drawer.saved.trigger) + " is also bound to "
-                + taken.join(", ") + "; the wheel takes it." : "")
+                + taken.join(", ") + ". Both run when you press it, so pick another button or remove that binding." : "")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: drawer.setupError ? Color.urgent : Color.popups.text

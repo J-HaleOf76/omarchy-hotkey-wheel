@@ -7,10 +7,11 @@ import qs.Ui
 import "Actions.js" as Actions
 
 // A custom action in full: what it does when picked, its command, and the
-// script it runs. Opens over the picker for an agent's suggestion (Save it /
-// Try it / Discard) and for a custom action from the list (Use / Try it /
-// Remove / Rename). Renaming changes the name, icon and description, never the
-// command. Buttons take clicks only, so keys typed elsewhere can't press them.
+// script it runs. Opens over the picker for a custom action from the list:
+// Use, Try it, Rename, Remove. Renaming changes the name, icon and
+// description, never the command. For a new action from the create page
+// (`confirm` "try" or "save") it asks before Try it or Save it goes on, with
+// the script open; Yes takes a click, a moment after the window opens.
 BorderSurface {
     id: root
     radius: Style.cornerRadius
@@ -21,8 +22,10 @@ BorderSurface {
                     + footer.implicitHeight + Style.spacing.md * 2
 
     property var action: null
-    property bool suggested: false
     property int slot: 0
+    property string confirm: ""
+    // Yes is off for a moment, so the click that opened the window can't land on it.
+    property bool armed: false
     property string status: ""
     readonly property string home: Quickshell.env("HOME")
     readonly property string script: action ? Actions.scriptPath(action.command, home) : ""
@@ -33,69 +36,34 @@ BorderSurface {
     property string scriptState: ""
     property string scriptContents: ""
     property string scriptNote: ""
-    // SHA-256 of the script as last read; Save it pins it (Actions.runCommand).
-    property string scriptHash: ""
-    // A pinned custom action whose script is no longer the approved one.
-    readonly property bool scriptChanged: !suggested && !!action && !!action.scriptHash
-                                          && scriptState === "ok" && scriptHash !== action.scriptHash
-    // A pinned custom action whose script is gone or can't be shown, so it can't be approved.
-    readonly property bool scriptLost: !suggested && !!action && !!action.scriptHash && scriptState === "hidden"
     readonly property var warnings: action ? Actions.warnings(action.command, scriptContents, home) : []
     readonly property int scriptLimit: 128 * 1024
     readonly property bool scriptHidden: Actions.hasHiddenChars(scriptContents)
-    // A suggestion can only be tried or saved once its script, if any, is on
-    // screen in full.
-    readonly property bool reviewable: !unchecked && (!script || (scriptState === "ok" && Actions.validHash(scriptHash)))
-    // A file in the scripts folder the command runs some other way, which
-    // this window can't show or pin (Actions.uncheckedFile).
-    readonly property string unchecked: action ? Actions.uncheckedFile(action.command, home) : ""
-    property bool tried: false
     property bool editing: false
-    // Shown over `status`: what the window itself has to say.
-    property string notice: ""
-    // The script folds away for a custom action, behind an arrow; an agent's
-    // suggestion shows it open, since that is when it has to be read.
+    // The script folds away behind an arrow.
     property bool scriptOpen: false
     readonly property int scriptLines: scriptContents ? scriptContents.replace(/\n$/, "").split("\n").length : 0
-    // Buttons that act wait a moment after what is shown changes, so a click
-    // meant for the old one can't land on the new one.
-    property bool armed: false
-    // A click waits for the script to be read again. Only if it is what is on
-    // screen does the click go through; otherwise the new one is shown.
-    property string pendingAct: ""
-    // Bumped whenever the action changes; a read started for an older one is
-    // dropped, so a click can never land on the action that replaced it.
+    // Bumped whenever the action changes; a read started for an older one is dropped.
     property int generation: 0
     onActionChanged: {
         generation++
-        pendingAct = ""
         editing = false
-        tried = false
-        notice = ""
-        scriptOpen = suggested
-        disarm()
-        // After `script` follows the new action.
-        scriptState = "loading"
+        scriptOpen = confirm.length > 0
+        armed = false
+        if (confirm) armTimer.restart()
         Qt.callLater(inspectScript)
     }
-    onSuggestedChanged: scriptOpen = suggested
-    // A changed script is shown open: approving it means reading it first.
-    onScriptChangedChanged: if (scriptChanged) scriptOpen = true
 
     Timer { id: armTimer; interval: 700; onTriggered: root.armed = true }
 
     signal tryIt()
     signal use()
-    // The hash of the script as shown, "" when the command runs no script.
-    signal saveIt(string hash)
-    signal approve(string hash)
     signal remove()
     signal renamed(var action)
     signal closeRequested()
+    signal confirmed()
 
     function focusBody() { body.forceActiveFocus() }
-
-    function disarm() { armed = false; armTimer.restart() }
 
     function startEditing() {
         labelEdit.text = action.label
@@ -114,80 +82,38 @@ BorderSurface {
         var label = labelEdit.text.trim()
         if (!label) { labelEdit.forceActiveFocus(); return }
         renamed({ label: label, icon: iconEdit.text.trim() || Actions.glyphFor(label, action.command),
-                  command: action.command, description: descriptionEdit.text.trim(), scriptHash: action.scriptHash })
+                  command: action.command, description: descriptionEdit.text.trim() })
         stopEditing()
     }
 
+    // One read at a time: one asked for while another runs starts when it ends.
     function inspectScript() {
         scriptState = script ? "loading" : ""
         scriptContents = ""
         scriptNote = ""
-        scriptHash = ""
-        readScript("")
-    }
-
-    // "try", "save", "use" or "approve", from a button.
-    function act(name) {
-        if (!armed || pendingAct || scriptState === "loading") return
-        notice = ""
-        readScript(name)
-    }
-
-    // One read at a time: a read asked for while one runs starts when it ends,
-    // and the older result is dropped.
-    function readScript(name) {
-        pendingAct = name
+        if (!script) return
         if (scriptReader.running) { scriptReader.stale = true; return }
-        startRead()
-    }
-
-    function startRead() {
         scriptReader.readFor = script
         scriptReader.generation = generation
-        if (script) scriptReader.running = true
-        else if (pendingAct) finish()
-    }
-
-    function finish() {
-        var name = pendingAct
-        pendingAct = ""
-        if (!armed) return
-        var hash = scriptState === "ok" ? scriptHash : ""
-        if (name === "try") { tried = true; tryIt() }
-        else if (name === "save") saveIt(hash)
-        else if (name === "use") use()
-        else if (name === "approve" && hash) approve(hash)
+        scriptReader.running = true
     }
 
     function scriptRead(code, out) {
         if (scriptReader.generation !== generation || scriptReader.readFor !== script) return
         var cut = out.indexOf("\n")
-        var head = (cut < 0 ? out : out.slice(0, cut)).split(" ")
+        var head = cut < 0 ? out : out.slice(0, cut)
         var text = cut < 0 ? "" : out.slice(cut + 1)
-        var state = "hidden", contents = "", note = "", hash = ""
+        var note = ""
         if (code !== 0) note = "Couldn't read it."
-        else if (head[0] === "missing") note = "Script not found."
-        else if (head[0] === "special") note = "Not a plain file, so it isn't shown."
-        else if (head[0] === "large") note = "Too large to show here (over " + Math.round(scriptLimit / 1024) + " KB)."
-        else if (head[0] === "encoding") note = "Not plain UTF-8 text, so it isn't shown."
-        else if (head[0] !== "ok" || !Actions.validHash(head[1])) note = "Couldn't read it."
+        else if (head === "missing") note = "Script not found."
+        else if (head === "special") note = "Not a plain file, so it isn't shown."
+        else if (head === "large") note = "Too large to show here (over " + Math.round(scriptLimit / 1024) + " KB)."
+        else if (head === "encoding") note = "Not plain UTF-8 text, so it isn't shown."
+        else if (head !== "ok") note = "Couldn't read it."
         else if (text.indexOf("\u0000") !== -1) note = "A binary file, so it isn't shown."
-        else { state = "ok"; contents = text; hash = head[1] }
-        var changed = scriptState !== "loading" && (state !== scriptState || contents !== scriptContents || note !== scriptNote)
-        scriptState = state
-        scriptContents = contents
+        scriptState = note ? "hidden" : "ok"
+        scriptContents = note ? "" : text
         scriptNote = note
-        scriptHash = Actions.validHash(hash) ? hash : ""
-        if (!pendingAct) return
-        if (changed) {
-            pendingAct = ""
-            scriptOpen = true
-            notice = "The script changed since it was shown. Read it again before you go on."
-            disarm()
-            return
-        }
-        if (suggested && !reviewable && pendingAct !== "use") { pendingAct = ""; return }
-        finish()
     }
 
     Process {
@@ -195,10 +121,10 @@ BorderSurface {
         property string readFor: ""
         property int generation: -1
         property bool stale: false
-        // One bounded snapshot: the bytes shown and the hash that pins them
-        // come from the same read, and the size is checked in bytes before
-        // any decoding.
+        // The size is checked in bytes before any decoding; stat answers in
+        // English whatever the user's language.
         command: ["bash", "-c", 'p=$1 limit=$2
+export LC_ALL=C
 [[ -e $p ]] || { echo missing; exit 0; }
 type=$(stat -L -c %F -- "$p") || exit 1
 [[ $type == "regular file" || $type == "regular empty file" ]] || { echo special; exit 0; }
@@ -207,12 +133,11 @@ trap \'rm -f "$snap"\' EXIT
 timeout 2 head -c "$((limit + 1))" -- "$p" > "$snap" || exit 1
 (( $(stat -c %s -- "$snap") <= limit )) || { echo large; exit 0; }
 iconv -f UTF-8 -t UTF-8 -- "$snap" > /dev/null 2>&1 || { echo encoding; exit 0; }
-hash=$(sha256sum < "$snap") || exit 1
-echo "ok ${hash%% *}"
+echo ok
 cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
         stdout: StdioCollector { id: readOutput; waitForEnd: true }
         onExited: function(code) {
-            if (stale) { stale = false; root.startRead(); return }
+            if (stale) { stale = false; root.inspectScript(); return }
             root.scriptRead(code, readOutput.text)
         }
     }
@@ -276,11 +201,9 @@ cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
                 }
             }
             Text {
-                text: root.suggested ? "󰚩  Suggested by an agent for slot " + (root.slot + 1)
-                                       + (root.tried ? " · tried, not saved" : " · not run yet")
-                                     : "󰆓  Custom action"
-                color: root.suggested ? Color.accent : Color.menu.text
-                opacity: root.suggested ? 1 : 0.6
+                text: root.confirm ? "󰐕  New action · not saved yet" : "󰆓  Custom action"
+                color: Color.menu.text
+                opacity: 0.6
                 font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
             }
         }
@@ -299,7 +222,7 @@ cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
                 spacing: Style.space(6)
 
                 Text {
-                    text: root.suggested ? "What it does, as the agent describes it" : "What it does when you pick it"
+                    text: "What it does when you pick it"
                     color: Color.menu.text
                     font { family: Style.font.menuFamily; pixelSize: Style.font.body; bold: true }
                 }
@@ -360,22 +283,6 @@ cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
                         color: Color.urgent
                         font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
                     }
-                }
-                Text {
-                    visible: root.scriptChanged
-                    width: parent.width
-                    text: "󰀦  The script changed since you saved it, so its slot won't run it until you approve this version."
-                    wrapMode: Text.Wrap
-                    color: Color.urgent
-                    font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
-                }
-                Text {
-                    visible: root.scriptLost
-                    width: parent.width
-                    text: "󰀦  Its slot won't run it: the script it was saved with can't be shown here, so this version can't be approved."
-                    wrapMode: Text.Wrap
-                    color: Color.urgent
-                    font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
                 }
                 Item { width: 1; height: Style.spacing.md; visible: root.script.length > 0 }
                 // Click anywhere on the header to fold or unfold the script.
@@ -461,20 +368,15 @@ cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
 
             Text {
                 width: parent.width
+                textFormat: Text.PlainText
                 text: root.editing ? "The command stays as it is; to change it, create a new action."
-                    : root.notice || (root.suggested && root.unchecked
-                                      ? "It runs " + root.unchecked + " in a way this window can't show or check, so it can't be tried or saved from here. Ask the agent to make the command the script's path, then any arguments."
-                                      : root.suggested && !root.reviewable && root.scriptState !== "loading"
-                                      ? "Its script can't be shown in full here, so it can't be tried or saved from this window."
-                                      : "")
-                    || root.status || (root.suggested
-                    ? "Read it first. Try it runs it once; Save it puts it on slot " + (root.slot + 1)
-                      + " and keeps it under Custom actions. Esc throws it away."
-                    : root.scriptChanged ? "Read the new version above. Approve this version lets its slot run it again."
-                    : "Use puts it on slot " + (root.slot + 1) + "; Save in the drawer keeps it there.")
+                    : root.confirm === "try" ? "Have you read what the command and its script do? Try it runs it now, as you."
+                    : root.confirm === "save" ? "Have you read what the command and its script do? Save it puts it on slot "
+                        + (root.slot + 1) + ", where it runs every time you pick it."
+                    : root.status || "Use puts it on slot " + (root.slot + 1) + "; Save in the drawer keeps it there."
                 wrapMode: Text.Wrap
-                readonly property bool loud: !root.editing && (root.notice || root.status || (root.suggested && !root.reviewable))
-                color: root.notice ? Color.urgent : loud ? Color.accent : Color.menu.text
+                readonly property bool loud: !root.editing && (root.confirm.length > 0 || root.status.length > 0)
+                color: loud ? Color.accent : Color.menu.text
                 opacity: loud ? 1 : 0.55
                 font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
             }
@@ -495,62 +397,53 @@ cat -- "$snap"', "_", readFor, String(root.scriptLimit)]
                 }
             }
             Row {
-                visible: !root.editing
+                visible: root.confirm.length > 0
                 spacing: Style.spacing.md
                 Button {
-                    visible: root.suggested
-                    text: "Save it"
-                    iconText: "󰆓"
+                    text: root.confirm === "save" ? "Yes, save it" : "Yes, try it"
+                    iconText: root.confirm === "save" ? "󰆓" : "󰐊"
                     bordered: true
-                    enabled: root.armed && root.reviewable && !root.pendingAct
+                    enabled: root.armed
                     opacity: enabled ? 1 : 0.45
                     foreground: Color.menu.text
-                    onClicked: root.act("save")
+                    onClicked: if (root.armed) root.confirmed()
                 }
                 Button {
-                    visible: root.scriptChanged
-                    text: "Approve this version"
-                    iconText: "󰄬"
-                    bordered: true
-                    enabled: root.armed && !root.pendingAct && root.scriptState !== "loading"
-                    opacity: enabled ? 1 : 0.45
+                    text: "No"
+                    iconText: "󰅖"
                     foreground: Color.menu.text
-                    onClicked: root.act("approve")
+                    onClicked: root.closeRequested()
                 }
+            }
+            Row {
+                visible: !root.editing && root.confirm.length === 0
+                spacing: Style.spacing.md
                 Button {
-                    visible: !root.suggested && !root.scriptChanged
                     text: "Use on slot " + (root.slot + 1)
                     bordered: true
-                    enabled: root.armed && !root.pendingAct && root.scriptState !== "loading"
-                    opacity: enabled ? 1 : 0.45
                     foreground: Color.menu.text
-                    onClicked: root.act("use")
+                    onClicked: root.use()
                 }
                 Button {
                     text: "Try it"
                     iconText: "󰐊"
-                    enabled: root.armed && (root.reviewable || !root.suggested) && !root.pendingAct
-                             && root.scriptState !== "loading"
-                    opacity: enabled ? 1 : 0.45
                     foreground: Color.menu.text
-                    onClicked: root.act("try")
+                    onClicked: root.tryIt()
                 }
                 Button {
-                    visible: !root.suggested && !root.scriptChanged
                     text: "Rename"
                     iconText: "󰏫"
                     foreground: Color.menu.text
                     onClicked: root.startEditing()
                 }
                 Button {
-                    visible: !root.suggested
                     text: "Remove"
                     iconText: "󰆴"
                     foreground: Color.menu.text
                     onClicked: root.remove()
                 }
                 Button {
-                    text: root.suggested ? "Discard" : "Close"
+                    text: "Close"
                     iconText: "󰅖"
                     foreground: Color.menu.text
                     onClicked: root.closeRequested()

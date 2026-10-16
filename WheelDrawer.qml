@@ -32,6 +32,12 @@ Panel {
     property var saving: null
     property bool applyAfterSave: false
     property string configError: ""
+    // A settings or custom-actions file that exists but didn't load is never
+    // written over, so a typo from a hand edit can't cost the user their slots.
+    property bool settingsBroken: false
+    property bool libraryBroken: false
+    readonly property string brokenMessage: "Your wheel settings didn't load, so they aren't written over. Fix or remove "
+                                            + configPath + ", then open the drawer again."
     // Mouse setup, from the hotkey-wheel helper: "setup", "not-setup", or ""
     // while unknown. `conflicts` maps a trigger to other bindings already on it.
     property string setupState: ""
@@ -41,7 +47,6 @@ Panel {
     readonly property bool dirty: draft.slots !== saved.slots || draft.labels !== saved.labels
                                   || !Actions.same(draft.actions, saved.actions)
     readonly property bool pickerOpen: picker.opened
-    readonly property string screenName: panel.screen ? panel.screen.name : ""
     readonly property string home: Quickshell.env("HOME")
     readonly property string helperPath: Qt.resolvedUrl("hotkey-wheel").toString().replace(/^file:\/\//, "")
     readonly property string configPath: (Quickshell.env("XDG_CONFIG_HOME") || home + "/.config")
@@ -107,21 +112,11 @@ Panel {
         if (cursor >= count) cursor = -1
     }
 
-    // An agent's suggestion opens in the picker's details window, where the
-    // user reads it and can try it; only Save it keeps it. A newer one replaces it.
-    // Returns "" or why the suggestion was refused.
-    function propose(index, action) {
-        if (index >= draft.slots) return "the wheel shows " + draft.slots + " slots, so slot " + (index + 1) + " is hidden."
-        if (!opened) open()
-        cursor = index
-        picker.suggest(index, draft.actions[index], action)
-        return ""
-    }
-
     // Save it: the slot is written at once; the rest of the draft stays a draft.
     // Returns "" or why it was not saved (nothing changes then).
     function saveSlot(index, action) {
         if (saving) return "Still saving the wheel; try again in a moment."
+        if (settingsBroken) return brokenMessage
         if (index >= saved.slots)
             return "Slot " + (index + 1) + " isn't on the saved wheel yet. Save the new slot count in the drawer first."
         var next
@@ -183,6 +178,7 @@ Panel {
     }
 
     function write(next, applyTrigger) {
+        if (settingsBroken) { configError = brokenMessage; return }
         // FileView skips a write whose text is unchanged and then never
         // reports saved, so an unchanged wheel is finished here.
         if (Actions.same(next, saved)) { finishSave(next); return }
@@ -218,6 +214,7 @@ Panel {
         }
         customPicks = left
         if (added.length === 0) return
+        if (libraryBroken) { configError = libraryBrokenMessage(); return }
         library = Actions.remember(library, added)
         writeLibrary()
     }
@@ -227,6 +224,7 @@ Panel {
     // Save it, and the draft's too. Returns "" or why nothing was renamed.
     function rename(before, after) {
         if (saving) return "Still saving the wheel; try again in a moment."
+        if (settingsBroken || libraryBroken) return libraryBroken ? libraryBrokenMessage() : brokenMessage
         var was = Actions.pick(before), now = Actions.pick(after)
         if (was.command !== now.command) return "Renaming keeps the command."
         var swapIn = function(list) {
@@ -250,11 +248,17 @@ Panel {
     }
 
     function forget(command) {
+        if (libraryBroken) { configError = libraryBrokenMessage(); return }
         library = Actions.forget(library, command)
         writeLibrary()
     }
 
+    function libraryBrokenMessage() {
+        return "Your custom actions didn't load, so they aren't written over. Fix or remove " + libraryPath + "."
+    }
+
     function writeLibrary() {
+        if (libraryBroken) { configError = libraryBrokenMessage(); return }
         libraryFile.setText(JSON.stringify({ version: 1, commands: library }, null, 2) + "\n")
     }
 
@@ -291,17 +295,28 @@ Panel {
                 var merged = Actions.merge(root.draft, root.saved, incoming)
                 root.saved = incoming
                 root.draft = Actions.resize(merged, merged.slots)
+                root.settingsBroken = false
                 root.configError = ""
-            } catch (e) { root.configError = "Settings not loaded: " + e.message }
+            } catch (e) {
+                root.settingsBroken = true
+                root.configError = "Settings not loaded: " + e.message
+            }
         }
         onLoadFailed: function(error) {
-            if (error !== FileViewError.FileNotFound) root.configError = "Could not read wheel settings."
+            root.settingsBroken = error !== FileViewError.FileNotFound
+            if (root.settingsBroken) root.configError = "Could not read wheel settings."
         }
         onSaved: {
             root.finishSave(root.saving)
             Quickshell.execDetached(["omarchy-shell", "io.github.erikrjohansson.hotkey-wheel", "reload"])
         }
-        onSaveFailed: { root.saving = null; root.applyAfterSave = false; root.configError = "Could not save wheel settings." }
+        onSaveFailed: {
+            root.saving = null
+            root.applyAfterSave = false
+            root.configError = "Could not save wheel settings."
+            // Back to what the file holds, so trying again really writes.
+            reload()
+        }
     }
 
     FileView {
@@ -312,8 +327,19 @@ Panel {
         printErrors: false
         onFileChanged: reload()
         onLoaded: {
-            try { root.library = Actions.validateLibrary(JSON.parse(text())) }
-            catch (e) { root.library = [] }
+            try {
+                root.library = Actions.validateLibrary(JSON.parse(text()))
+                root.libraryBroken = false
+            } catch (e) {
+                root.library = []
+                root.libraryBroken = true
+            }
+        }
+        onLoadFailed: function(error) { root.libraryBroken = error !== FileViewError.FileNotFound }
+        onSaveFailed: {
+            root.configError = "Could not save your custom actions."
+            // The list goes back to what the file holds.
+            reload()
         }
     }
 
@@ -362,9 +388,6 @@ Panel {
         onPicked: function(index, action) { root.assign(index, action) }
         onForget: function(command) { root.forget(command) }
         onClosed: Qt.callLater(root.refocus)
-        // The agent's terminal opens behind this overlay; get out of its way.
-        // Its suggestion reopens the drawer.
-        onAgentStarted: root.close()
     }
 
     KeyboardPanel {
