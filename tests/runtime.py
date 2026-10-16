@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 
 root = Path(__file__).resolve().parents[1]
 shell = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")) / "shell"
@@ -141,6 +142,12 @@ esac
     assert helper("state").stdout.startswith("setup\n"), helper("state")
     by_link = helper("unsetup")
     assert by_link.returncode == 1 and "mine.lua" in by_link.stderr, by_link
+    # A pipe named like a Lua file (behind a link, too) is skipped, not waited on.
+    os.mkfifo(elsewhere / "mods/waiting.lua")
+    os.mkfifo(hypr / "waiting.lua")
+    started = time.monotonic()
+    piped = helper("state")
+    assert piped.stdout.startswith("setup\n") and time.monotonic() - started < 2, piped
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
                               capture_output=True, text=True)
@@ -157,4 +164,4 @@ esac
                                capture_output=True, text=True).stdout
     assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
         ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, wheel binds never removed, conflicts, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, wheel binds never removed, conflicts, exactly-once dispatch")

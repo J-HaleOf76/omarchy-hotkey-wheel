@@ -97,9 +97,12 @@ switched_off() {
 
 # A Lua file in the Hyprland config folder loads this plugin's bindings.lua,
 # by Set up or by hand. Links are followed (a stow-style linked file or
-# folder). Prints the files.
+# folder). Pipes and devices are skipped and the search gives up after 3
+# seconds, so a link into a large tree can't hang the drawer. Prints the
+# files; with -q it only answers whether there is one (stopping at the first).
 mentioned() {
-  [[ -d $hypr_dir ]] && grep -RlF --include='*.lua' "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
+  [[ -d $hypr_dir ]] && timeout 3 grep -R "${1:--l}" -F --devices=skip --include='*.lua' \
+    "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
 }
 
 # Whether Hyprland should bind the trigger after a reload.
@@ -112,7 +115,7 @@ state() {
   list=$(binds) || fail "could not read Hyprland's bindings"
   [[ -n $list ]] || fail "could not read Hyprland's bindings"
   if awk -F '\t' '$3 == "Hotkey Wheel (hold)" { found = 1 } END { exit !found }' <<<"$list" || has_block \
-      || { switched_off && mentioned >/dev/null; }; then
+      || { switched_off && mentioned -q; }; then
     echo setup
   else
     echo not-setup
@@ -149,7 +152,7 @@ reload_and_check() {
 setup() {
   if loaded; then echo setup; return; fi
   local existed=false original="" added=false text=""
-  if ! has_block && ! mentioned >/dev/null; then
+  if ! has_block && ! mentioned -q; then
     mkdir -p "$(dirname "$bindings_file")" || fail "could not create $(dirname "$bindings_file")"
     if [[ -e $bindings_file ]]; then
       existed=true
@@ -217,7 +220,7 @@ unsetup() {
 
 # After the trigger or the On switch changed.
 apply() {
-  loaded || has_block || mentioned >/dev/null || { echo not-setup; return; }
+  loaded || has_block || mentioned -q || { echo not-setup; return; }
   if [[ $(want_loaded) == true ]]; then
     reload_and_check true || fail "Hyprland did not load Hotkey Wheel after the reload"
   else
