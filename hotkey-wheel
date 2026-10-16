@@ -99,10 +99,29 @@ switched_off() {
 # by Set up or by hand. Links are followed (a stow-style linked file or
 # folder). Pipes and devices are skipped and the search gives up after 3
 # seconds, so a link into a large tree can't hang the drawer. Prints the
-# files; with -q it only answers whether there is one (stopping at the first).
+# files; with -q it only answers (stopping at the first). Returns 0 when
+# found, 1 when not, and 2 when the search was cut short, so callers never
+# take an unfinished search for "not there".
 mentioned() {
-  [[ -d $hypr_dir ]] && timeout 3 grep -R "${1:--l}" -F --devices=skip --include='*.lua' \
-    "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
+  [[ -d $hypr_dir ]] || return 1
+  local needle="io.github.erikrjohansson.hotkey-wheel/bindings.lua" out="" status
+  if [[ ${1:-} == -q ]]; then
+    timeout 3 grep -RqF --devices=skip --include='*.lua' "$needle" -- "$hypr_dir" 2>/dev/null
+    status=$?
+  else
+    out=$(timeout 3 grep -RlF --devices=skip --include='*.lua' "$needle" -- "$hypr_dir" 2>/dev/null)
+    status=$?
+  fi
+  # grep goes on past unreadable files and broken links (and then exits 2);
+  # only the time limit leaves the answer open.
+  (( status == 124 || status == 137 )) && return 2
+  [[ $status == 0 || -n $out ]] || return 1
+  [[ -n $out ]] && printf '%s\n' "$out"
+  return 0
+}
+
+unfinished() {
+  fail "could not finish searching $hypr_dir for a line that loads Hotkey Wheel$1"
 }
 
 # Whether Hyprland should bind the trigger after a reload.
@@ -114,12 +133,14 @@ state() {
   local list
   list=$(binds) || fail "could not read Hyprland's bindings"
   [[ -n $list ]] || fail "could not read Hyprland's bindings"
-  if awk -F '\t' '$3 == "Hotkey Wheel (hold)" { found = 1 } END { exit !found }' <<<"$list" || has_block \
-      || { switched_off && mentioned -q; }; then
-    echo setup
-  else
-    echo not-setup
+  local wired=false
+  if awk -F '\t' '$3 == "Hotkey Wheel (hold)" { found = 1 } END { exit !found }' <<<"$list" || has_block; then
+    wired=true
+  elif switched_off; then
+    mentioned -q
+    case $? in 0) wired=true ;; 2) unfinished "" ;; esac
   fi
+  if [[ $wired == true ]]; then echo setup; else echo not-setup; fi
   # Presses other bindings already use (SUPER is modmask 64; keys are as
   # Lua binds report them, with modifiers spelled out). While the wheel is
   # loaded, bindings.lua keeps one unnamed bind on each other mouse button
@@ -151,8 +172,13 @@ reload_and_check() {
 
 setup() {
   if loaded; then echo setup; return; fi
-  local existed=false original="" added=false text=""
-  if ! has_block && ! mentioned -q; then
+  local existed=false original="" added=false text="" wired=0
+  if ! has_block; then
+    mentioned -q
+    wired=$?
+    (( wired == 2 )) && unfinished ", so nothing was added"
+  fi
+  if ! has_block && (( wired == 1 )); then
     mkdir -p "$(dirname "$bindings_file")" || fail "could not create $(dirname "$bindings_file")"
     if [[ -e $bindings_file ]]; then
       existed=true
@@ -207,10 +233,16 @@ unsetup() {
     write_bindings "$text" || fail "could not write $bindings_file"
   fi
   # A line added by hand would load a missing file once the plugin is gone.
-  local still
-  if still=$(mentioned); then
+  local still status
+  still=$(mentioned)
+  status=$?
+  if (( status == 0 )); then
     hyprctl reload >/dev/null 2>&1
     fail "$(head -n1 <<<"$still") still loads Hotkey Wheel through a line not added by Set up; remove that line by hand"
+  fi
+  if (( status == 2 )); then
+    hyprctl reload >/dev/null 2>&1
+    unfinished "; check it by hand before removing the plugin"
   fi
   if ! reload_and_check false; then
     fail "Hotkey Wheel is still loaded by a line not added by Set up (in $bindings_file or a file it loads); remove that line by hand"
@@ -220,7 +252,11 @@ unsetup() {
 
 # After the trigger or the On switch changed.
 apply() {
-  loaded || has_block || mentioned -q || { echo not-setup; return; }
+  # An unfinished search reloads anyway: reloading is harmless.
+  if ! loaded && ! has_block; then
+    mentioned -q
+    (( $? == 1 )) && { echo not-setup; return; }
+  fi
   if [[ $(want_loaded) == true ]]; then
     reload_and_check true || fail "Hyprland did not load Hotkey Wheel after the reload"
   else

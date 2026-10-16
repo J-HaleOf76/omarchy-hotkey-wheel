@@ -243,8 +243,19 @@ ShellRoot {
             wheel.scroll(-120)
             check(wheel.selected === 2, "scroll doesn't steer a hold")
             wheel.holding = false
-            wheel.selected = -1
-            check(wheel.keyPressed(Qt.Key_Space, 0, false) && !wheel.opened && !wheel.pendingCommand, "Space runs the selection")
+            // A slot picked by keys stays through a small nudge of the pointer; a real move takes over.
+            check(wheel.keyPressed(Qt.Key_Down, 0, false) && wheel.selected === 3, "Down from slot 3")
+            wheel.pointerMoved(wheel.steeredAt.x + 5, wheel.steeredAt.y + 5)
+            check(wheel.selected === 3, "a small nudge keeps the keyboard pick")
+            wheel.pointerMoved(wheel.centerX, wheel.centerY - wheel.radius * 0.7)
+            check(wheel.selected === 0 && !isFinite(wheel.steeredAt.x), "a real move picks by pointer again")
+            wheel.scroll(-120)
+            wheel.pointerMoved(wheel.steeredAt.x - 4, wheel.steeredAt.y)
+            check(wheel.selected === 1, "a small nudge keeps the scroll pick")
+            // Space runs the selected slot (slot 1's test command; runtime.py counts the dispatch).
+            wheel.scroll(120)
+            check(wheel.selected === 0 && wheel.keyPressed(Qt.Key_Space, 0, false) && !wheel.opened
+                  && wheel.pendingCommand === "printf hotkey-wheel-test", "Space runs the selection")
             wheel.opened = wasOpened
             // Drawer: picks are trimmed, saved, and the draft ends clean.
             // (Opening re-reads the file; this drawer is never opened.)

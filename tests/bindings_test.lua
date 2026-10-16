@@ -24,7 +24,7 @@ local function handle(list, item)
   return item
 end
 
-local function load(settings, layers)
+local function load(settings)
   local file = assert(io.open(base .. "/omarchy/extensions/hotkey-wheel.json", "w"))
   file:write(settings)
   file:close()
@@ -38,14 +38,6 @@ local function load(settings, layers)
     dispatch = function(d) table.insert(W.events, d.event) end,
     dsp = { event = function(message) return { event = message } end },
     get_cursor_pos = function() return { x = 10, y = 20 } end,
-    get_monitors = function() return { { name = "M" } } end,
-    get_layers = function(filter)
-      local out = {}
-      for _, layer in ipairs(layers or {}) do
-        if layer.namespace == filter.namespace then table.insert(out, layer) end
-      end
-      return out
-    end,
   }
   dofile(script)
   W.count = #W.binds
@@ -56,7 +48,10 @@ local function find(keys, described)
     if b.keys == keys and (described == nil or (b.opts.description ~= nil) == described) then return b end
   end
 end
-local function fire(name, namespace) for _, fn in ipairs(W.on[name] or {}) do fn({ namespace = namespace }) end end
+-- Layer events; the wheel's layer is "A" unless another address is given.
+local function fire(name, namespace, address)
+  for _, fn in ipairs(W.on[name] or {}) do fn({ namespace = namespace, address = address or "A" }) end
+end
 local function last() return W.events[#W.events] or "" end
 -- The last event starts with the wheel's id and then `rest` (plain text).
 local function sent(rest) return last():sub(1, #id + #rest) == id .. rest end
@@ -67,8 +62,10 @@ local function protection() -- the undescribed binds, by key
   return out
 end
 
--- Middle-click trigger: what is made at load.
+-- Middle-click trigger: what is made at load. Every load (a reload too) closes
+-- any wheel that is open or about to open, since its old binds are gone.
 load('{"version":1,"trigger":"middle"}')
+check(#W.events == 1 and last() == "io.github.erikrjohansson.hotkey-wheel cancel", "a load cancels any open wheel")
 local p = protection()
 check(find("mouse:274", true) and p.ESCAPE and p["mouse:273"] and p["mouse:272"] and p["mouse:275"] and p["mouse:276"]
       and not p["mouse:274"], "binds made at load")
@@ -116,14 +113,27 @@ before = #W.events
 release.fn()
 check(#W.events == before, "closed wheel forgets its hold")
 
--- An older wheel closing late doesn't end a newer hold.
+-- An older wheel closing late doesn't end a newer hold, before or after the
+-- newer one's layer opened.
 hold.fn()
 fire("layer.opened", "omarchy-hotkey-wheel")
 release.fn()
 hold.fn()
+fire("layer.closed", "omarchy-hotkey-wheel", "B")
+release.fn()
+check(sent("release "), "a close of another layer doesn't end the hold")
 fire("layer.closed", "omarchy-hotkey-wheel")
+hold.fn()
+fire("layer.opened", "omarchy-hotkey-wheel", "A")
+release.fn()
+hold.fn()
+fire("layer.opened", "omarchy-hotkey-wheel", "B")
+fire("layer.closed", "omarchy-hotkey-wheel", "A")
+check(p["mouse:272"].enabled and p.ESCAPE.enabled and W.timers[1].enabled, "older close leaves the newer wheel protected")
 release.fn()
 check(sent("release "), "newer hold survives an older close")
+fire("layer.closed", "omarchy-hotkey-wheel", "B")
+check(not p.ESCAPE.enabled, "the owning close switches off")
 
 -- A hold whose release never comes is cancelled after a minute, never run.
 hold.fn()
@@ -134,6 +144,9 @@ check(not sent("cancel"), "a 30 s hold stays")
 clock = clock + 31
 W.timers[1].fn()
 check(last() == id .. "cancel", "a lost hold is cancelled")
+-- ...and switched off right away, even if the wheel never closes (a frozen shell).
+check(not p.ESCAPE.enabled and not p["mouse:273"].enabled and not p["mouse:272"].enabled and not W.timers[1].enabled,
+      "a cancel switches everything off itself")
 before = #W.events
 release.fn()
 check(#W.events == before, "and its release runs nothing")
@@ -155,12 +168,6 @@ check(p["mouse:272"] and p["mouse:274"] and p["mouse:276"] and not p["mouse:275"
 load('{"version":1,"enabled":false}')
 p = protection()
 check(not find("mouse:274", true) and p.ESCAPE and not p["mouse:272"], "off binds no buttons")
-
--- Reloaded with the wheel open: it is closed, not left without its binds.
-load('{"version":1}', { { namespace = "omarchy-hotkey-wheel", mapped = true } })
-check(last() == id .. "cancel", "reload closes an open wheel")
-load('{"version":1}', { { namespace = "omarchy-hotkey-wheel", mapped = false } })
-check(#W.events == 0, "an unmapped wheel layer is left alone")
 
 -- Omarchy's keybinding list (SUPER + K) runs the config with a stand-in hl
 -- whose every unknown call returns an endless table: loading must finish and

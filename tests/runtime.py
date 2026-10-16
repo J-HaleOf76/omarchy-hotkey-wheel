@@ -77,10 +77,12 @@ with open(os.environ["WHEEL_TEST_LOG"] + ".copy", "a") as file:
     assert result.returncode == 0 and "HOTKEY_WHEEL_OK" in log, log
     assert not any(error in log for error in ("ReferenceError", "TypeError", "Error:", "is not a type", "Binding loop")), log
     calls = [json.loads(line) for line in (base / "dispatch.jsonl").read_text().splitlines()]
-    assert len(calls) == 1 and calls[0][0] == "eval", calls
-    lua = subprocess.run(["lua", "-", calls[0][1]], input="hl={exec_cmd=function(c) io.write(c) end}; assert(load(arg[1]))()",
-                         capture_output=True, text=True, check=True)
-    assert lua.stdout == "printf hotkey-wheel-test", lua.stdout
+    # The released gesture and Space in click mode, each exactly once.
+    assert len(calls) == 2 and all(call[0] == "eval" for call in calls), calls
+    for call in calls:
+        lua = subprocess.run(["lua", "-", call[1]], input="hl={exec_cmd=function(c) io.write(c) end}; assert(load(arg[1]))()",
+                             capture_output=True, text=True, check=True)
+        assert lua.stdout == "printf hotkey-wheel-test", lua.stdout
     # The agent prompt (here with the request, CMD-MARKER-7) reaches wl-copy on stdin only, without the slot's command.
     scanning.set()
     scanner.join()
@@ -143,11 +145,29 @@ esac
     by_link = helper("unsetup")
     assert by_link.returncode == 1 and "mine.lua" in by_link.stderr, by_link
     # A pipe named like a Lua file (behind a link, too) is skipped, not waited on.
+    # With no line to find, the search must get past pipes named like Lua files
+    # (directly and behind a linked folder) instead of waiting on them.
+    (hypr / "mine.lua").unlink()
+    (elsewhere / "mods/mine.lua").unlink()
+    (hypr / "mods").symlink_to(elsewhere / "mods", target_is_directory=True)
     os.mkfifo(elsewhere / "mods/waiting.lua")
     os.mkfifo(hypr / "waiting.lua")
     started = time.monotonic()
-    piped = helper("state")
-    assert piped.stdout.startswith("setup\n") and time.monotonic() - started < 2, piped
+    piped = subprocess.run([str(root / "hotkey-wheel"), "state"], env=setup_env, capture_output=True, text=True, timeout=10)
+    assert piped.stdout.startswith("not-setup\n") and time.monotonic() - started < 2, piped
+    # A search cut short (here a stand-in timeout) is never taken for "no line":
+    # state, Set up and removal stop and say so, and the file stays as it was.
+    cut = base / "cut-bin"
+    cut.mkdir()
+    (cut / "timeout").write_text("#!/bin/sh\nexit 124\n")
+    (cut / "timeout").chmod(0o755)
+    cut_env = dict(setup_env, PATH=str(cut) + ":" + setup_env["PATH"])
+    cut_short = lambda *args: subprocess.run([str(root / "hotkey-wheel"), *args], env=cut_env, capture_output=True, text=True, timeout=20)
+    before = bindings.read_text()
+    for command in ("state", "setup", "unsetup"):
+        result = cut_short(command)
+        assert result.returncode == 1 and "could not finish searching" in result.stderr, (command, result)
+    assert bindings.read_text() == before
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
                               capture_output=True, text=True, timeout=10)
@@ -164,4 +184,4 @@ esac
                                capture_output=True, text=True).stdout
     assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
         ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, keys/scroll/Space in click mode, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, wheel binds never removed, conflicts, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, keys/scroll/Space in click mode, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, unfinished searches refused, wheel binds never removed, conflicts, exactly-once dispatch")

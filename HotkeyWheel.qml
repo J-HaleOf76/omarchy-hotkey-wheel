@@ -204,6 +204,14 @@ Item {
         return true
     }
 
+    // The pointer moved over the wheel. A slot picked by keys or scroll stays
+    // until the pointer really moves.
+    function pointerMoved(x, y) {
+        if (!holding && isFinite(steeredAt.x) && Math.hypot(x - steeredAt.x, y - steeredAt.y) < Style.space(16)) return
+        steeredAt = Qt.point(NaN, NaN)
+        point(x, y)
+    }
+
     // Scroll turns the selection in click mode, one slot per notch (120 units;
     // finer touchpad scroll adds up to one). Down moves forward, like Down.
     function scroll(deltaY) {
@@ -326,15 +334,7 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-                onPositionChanged: function(mouse) {
-                    // A slot picked by keys or scroll stays until the pointer really moves.
-                    if (!root.holding && isFinite(root.steeredAt.x)
-                            && Math.hypot(mouse.x - root.steeredAt.x, mouse.y - root.steeredAt.y) < Style.space(16)) return
-                    root.steeredAt = Qt.point(NaN, NaN)
-                    root.point(mouse.x, mouse.y)
-                }
-                // Scroll turns the selection in click mode, one slot per notch
-                // (120 units; finer touchpad scroll adds up to one).
+                onPositionChanged: function(mouse) { root.pointerMoved(mouse.x, mouse.y) }
                 onWheel: function(wheel) { root.scroll(wheel.angleDelta.y) }
                 onClicked: function(mouse) {
                     if (mouse.button === Qt.RightButton) root.dismiss()

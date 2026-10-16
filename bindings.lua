@@ -36,9 +36,9 @@ local trigger = triggers[settings:match('"trigger"%s*:%s*"([%w%-]+)"')] or trigg
 local enabled = settings:match('"enabled"%s*:%s*false') == nil
 local gesture = ""
 local sequence = 0
--- The gesture the open wheel belongs to, so a late close of an older wheel
--- can't end a newer hold.
-local layer_gesture = nil
+-- The open wheel: its layer and the gesture it belongs to, so the close of
+-- another wheel layer (an older one, closing late) changes nothing.
+local owner = nil
 
 -- Tells the wheel through a Hyprland event ("custom>>" on the event socket)
 -- rather than a process, so it opens without a launch delay. Events arrive in
@@ -61,16 +61,26 @@ end
 -- removing a bind (unbind) removes every bind on that key, the user's too.
 -- They have no description, so Omarchy's keybinding list leaves them out.
 local cancel_binds, held_binds = {}, {}
+local hold_timer
 
 local function protect(binds, on)
   for _, binding in ipairs(binds) do binding:set_enabled(on) end
 end
 
+-- Everything off: the protection binds and the hold timer.
+local function unprotect()
+  protect(cancel_binds, false)
+  protect(held_binds, false)
+  if hold_timer then hold_timer:set_enabled(false) end
+end
+
 -- Every way a gesture ends without running a slot: forget it first, so a
--- release right behind it can't run the slot, then tell the wheel.
+-- release right behind it can't run the slot, switch everything off here
+-- (a frozen shell can't hold Escape and right-click), then tell the wheel.
 local function cancel()
   gesture = ""
-  protect(held_binds, false)
+  owner = nil
+  unprotect()
   send("cancel")
 end
 
@@ -109,14 +119,14 @@ end
 -- cancelled after a minute. It never runs a slot.
 local hold_limit = 60
 local hold_started = 0
-local hold_timer = hl.timer(function()
+hold_timer = hl.timer(function()
   if gesture ~= "" and os.time() - hold_started >= hold_limit then cancel() end
 end, { timeout = 1000, type = "repeat" })
 hold_timer:set_enabled(false)
 
 hl.on("layer.opened", function(layer)
   if layer.namespace ~= wheel_layer then return end
-  layer_gesture = gesture
+  owner = { address = layer.address, gesture = gesture }
   protect(cancel_binds, true)
   if gesture ~= "" then
     protect(held_binds, true)
@@ -126,23 +136,15 @@ hl.on("layer.opened", function(layer)
 end)
 
 hl.on("layer.closed", function(layer)
-  if layer.namespace ~= wheel_layer then return end
-  protect(cancel_binds, false)
-  protect(held_binds, false)
-  hold_timer:set_enabled(false)
-  -- Closed during a hold (the shell restarted, say): that gesture is over.
-  if gesture ~= "" and gesture == layer_gesture then gesture = "" end
-  layer_gesture = nil
+  if layer.namespace ~= wheel_layer or not owner or layer.address ~= owner.address then return end
+  unprotect()
+  -- Closed during its hold (the shell restarted, say): that gesture is over.
+  if gesture ~= "" and gesture == owner.gesture then gesture = "" end
+  owner = nil
 end)
 
--- Hyprland reloaded with the wheel open: the binds that would end it are
--- new and off, so the wheel is closed rather than left open. Counted loops,
--- not ipairs: Omarchy's keybinding list (SUPER + K) runs this file with a
--- stand-in `hl` whose every call returns an endless table.
-local monitors = hl.get_monitors() or {}
-for m = 1, #monitors do
-  local layers = hl.get_layers({ monitor = monitors[m].name, namespace = wheel_layer }) or {}
-  for l = 1, #layers do
-    if layers[l].mapped == true then send("cancel") end
-  end
-end
+-- Hyprland reloaded: the binds that would end an open wheel, or one about
+-- to open for a hold sent before the reload, are new and off, so any such
+-- wheel is closed rather than left open. Harmless when none is open; pcall
+-- because nothing listens yet while Hyprland starts.
+pcall(send, "cancel")
