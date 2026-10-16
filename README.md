@@ -12,7 +12,7 @@ border and fonts.
 
 Hold the button, point toward a slot and release to run it. Release where you
 started, press **Esc** or right-click to cancel. While you hold, other mouse
-buttons do nothing, so they never click the window under the wheel.
+buttons don't click the window under the wheel.
 
 ## Change the slots
 

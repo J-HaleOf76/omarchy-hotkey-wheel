@@ -127,4 +127,20 @@ esac
     (base / "config/omarchy/extensions/hotkey-wheel.json").write_text('{"enabled": false}')
     by_hand = helper("unsetup")
     assert by_hand.returncode == 1 and "mine.lua" in by_hand.stderr, by_hand
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, exactly-once dispatch")
+    # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
+    lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
+                              capture_output=True, text=True)
+    assert lua_test.returncode == 0 and "PASS" in lua_test.stdout, lua_test.stdout + lua_test.stderr
+    # Conflicts: the wheel's own unnamed button binds (one per other button) aren't
+    # reported; a user's bind on the same button is, named or not.
+    listed = base / "binds.txt"
+    (sandbox / "hyprctl").write_text('#!/bin/bash\n[[ $1 == binds ]] && cat "$WHEEL_TEST_BINDS"\n')
+    entry = lambda mods, key, text, how="__lua": f"bind\n\tmodmask: {mods}\n\tkey: {key}\n\tdescription: {text}\n\tdispatcher: {how}\n"
+    listed.write_text(entry(0, "mouse:274", "Hotkey Wheel (hold)") + entry(0, "mouse:274", "Hotkey Wheel (release)")
+                      + entry(0, "mouse:275", "") + entry(0, "mouse:276", "") + entry(0, "mouse:272", "")
+                      + entry(0, "mouse:276", "Paste") + entry(0, "mouse:275", "", "exec"))
+    conflicts = subprocess.run([str(root / "hotkey-wheel"), "state"], env=dict(setup_env, WHEEL_TEST_BINDS=str(listed)),
+                               capture_output=True, text=True).stdout
+    assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
+        ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wheel binds never removed, conflicts, exactly-once dispatch")

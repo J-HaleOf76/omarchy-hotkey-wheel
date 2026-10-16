@@ -75,11 +75,11 @@ has_block() {
   [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
 }
 
-# Hyprland's bindings as "modmask<TAB>key<TAB>description" lines. The plain
-# output is parsed because `hyprctl -j binds` is not valid JSON on 0.56.
+# Hyprland's bindings as "modmask<TAB>key<TAB>description<TAB>dispatcher" lines.
+# The plain output is parsed because `hyprctl -j binds` is not valid JSON on 0.56.
 binds() {
   hyprctl binds 2>/dev/null | awk '
-    function emit() { if (seen) printf "%s\t%s\t%s\n", f["modmask"], f["key"], f["description"]; seen = 0 }
+    function emit() { if (seen) printf "%s\t%s\t%s\t%s\n", f["modmask"], f["key"], f["description"], f["dispatcher"]; seen = 0 }
     /^bind/ { emit(); seen = 1; delete f; next }
     seen && match($0, /^\t[a-z]+: /) { f[substr($0, 2, RLENGTH - 3)] = substr($0, RLENGTH + 1) }
     END { emit() }'
@@ -117,14 +117,22 @@ state() {
     echo not-setup
   fi
   # Presses other bindings already use (SUPER is modmask 64; keys are as
-  # Lua binds report them, with modifiers spelled out).
-  awk -F '\t' '
+  # Lua binds report them, with modifiers spelled out). While the wheel is
+  # loaded, bindings.lua keeps one unnamed bind on each other mouse button
+  # (switched off until a hold); those are the wheel's own, not conflicts.
+  local own
+  own=$(awk -F '\t' '$3 == "Hotkey Wheel (release)" { print $2; exit }' <<<"$list")
+  awk -F '\t' -v own="$own" '
     $3 ~ /^Hotkey Wheel/ { next }
     { key = $2; sub(/^.* \+ /, "", key) }
-    key == "mouse:274" && $1 == 0  { print "conflict\tmiddle\t" $3 }
-    key == "mouse:274" && $1 == 64 { print "conflict\tsuper-middle\t" $3 }
-    key == "mouse:275" && $1 == 0  { print "conflict\tback\t" $3 }
-    key == "mouse:276" && $1 == 0  { print "conflict\tforward\t" $3 }' <<<"$list"
+    own != "" && $1 == 0 && $3 == "" && $4 == "__lua" && key ~ /^mouse:27[2456]$/ && key != own && !(key in skipped) {
+      skipped[key] = 1; next
+    }
+    { what = $3 == "" ? "another binding" : $3 }
+    key == "mouse:274" && $1 == 0  { print "conflict\tmiddle\t" what }
+    key == "mouse:274" && $1 == 64 { print "conflict\tsuper-middle\t" what }
+    key == "mouse:275" && $1 == 0  { print "conflict\tback\t" what }
+    key == "mouse:276" && $1 == 0  { print "conflict\tforward\t" what }' <<<"$list"
 }
 
 reload_and_check() {

@@ -1,7 +1,9 @@
 -- Hotkey Wheel: loaded from ~/.config/hypr/bindings.lua (the drawer's Set up
 -- adds the line). Holding the trigger opens the wheel. The trigger and the
--- drawer's On switch are stored in the settings; when off, nothing is bound.
+-- drawer's On switch are stored in the settings; when off, the trigger is
+-- left to the apps.
 local wheel_id = "io.github.erikrjohansson.hotkey-wheel"
+local wheel_layer = "omarchy-hotkey-wheel"
 
 -- Like Omarchy's own menus: no compositor fade, so the wheel is under the
 -- cursor the moment it opens and gone the moment a slot runs.
@@ -14,6 +16,7 @@ local triggers = {
   back = { press = "mouse:275", button = "mouse:275" },
   forward = { press = "mouse:276", button = "mouse:276" },
 }
+local other_buttons = { "mouse:272", "mouse:274", "mouse:275", "mouse:276" }
 
 local function read_settings()
   local config = os.getenv("XDG_CONFIG_HOME")
@@ -33,6 +36,9 @@ local trigger = triggers[settings:match('"trigger"%s*:%s*"([%w%-]+)"')] or trigg
 local enabled = settings:match('"enabled"%s*:%s*false') == nil
 local gesture = ""
 local sequence = 0
+-- The gesture the open wheel belongs to, so a late close of an older wheel
+-- can't end a newer hold.
+local layer_gesture = nil
 
 -- Tells the wheel through a Hyprland event ("custom>>" on the event socket)
 -- rather than a process, so it opens without a launch delay. Events arrive in
@@ -44,6 +50,35 @@ local function at_cursor(message)
   local cursor = hl.get_cursor_pos()
   send(string.format("%s %.1f %.1f", message, cursor.x, cursor.y))
 end
+
+-- Hold mode leaves keyboard focus alone to preserve the compositor's held
+-- mouse state, and the held button keeps pointer focus on the app below, so
+-- Escape and right-click cancel through binds of our own while the wheel is
+-- open. During a hold the other buttons would click into the app below
+-- unseen, so binds that do nothing take them until the wheel closes.
+--
+-- These binds are made once and only switched on and off: in Hyprland 0.56
+-- removing a bind (unbind) removes every bind on that key, the user's too.
+-- They have no description, so Omarchy's keybinding list leaves them out.
+local cancel_binds, held_binds = {}, {}
+
+local function protect(binds, on)
+  for _, binding in ipairs(binds) do binding:set_enabled(on) end
+end
+
+-- Every way a gesture ends without running a slot: forget it first, so a
+-- release right behind it can't run the slot, then tell the wheel.
+local function cancel()
+  gesture = ""
+  protect(held_binds, false)
+  send("cancel")
+end
+
+cancel_binds = {
+  hl.bind("ESCAPE", cancel, { ignore_mods = true }),
+  hl.bind("mouse:273", cancel, { ignore_mods = true }),
+}
+protect(cancel_binds, false)
 
 if enabled then
   hl.bind(trigger.press, function()
@@ -58,41 +93,52 @@ if enabled then
     if gesture ~= "" then
       at_cursor("release " .. gesture)
       gesture = ""
+      protect(held_binds, false)
     end
   end, { release = true, ignore_mods = true, non_consuming = true, description = "Hotkey Wheel (release)" })
+
+  for _, button in ipairs(other_buttons) do
+    if button ~= trigger.button then
+      table.insert(held_binds, hl.bind(button, function() end, { ignore_mods = true }))
+    end
+  end
+  protect(held_binds, false)
 end
 
--- Hold mode leaves keyboard focus alone to preserve the compositor's held
--- mouse state, and the held button keeps pointer focus on the app below, so
--- Escape and right-click cancel through binds that exist only while our layer
--- does. Cancelling forgets the gesture first, so a release right behind it
--- cannot run the slot. During a hold the other buttons would click into the
--- app below unseen, so they do nothing until the layer closes.
-local layer_bindings = {}
-local other_buttons = { "mouse:272", "mouse:274", "mouse:275", "mouse:276" }
+-- A hold that never ends (its release was lost, say to the lock screen) is
+-- cancelled after a minute. It never runs a slot.
+local hold_limit = 60
+local hold_started = 0
+local hold_timer = hl.timer(function()
+  if gesture ~= "" and os.time() - hold_started >= hold_limit then cancel() end
+end, { timeout = 1000, type = "repeat" })
+hold_timer:set_enabled(false)
+
 hl.on("layer.opened", function(layer)
-  if layer.namespace == "omarchy-hotkey-wheel" and #layer_bindings == 0 then
-    local function cancel()
-      gesture = ""
-      send("cancel")
-    end
-    layer_bindings = {
-      hl.bind("ESCAPE", cancel, { ignore_mods = true, description = "Cancel Hotkey Wheel" }),
-      hl.bind("mouse:273", cancel, { ignore_mods = true, description = "Cancel Hotkey Wheel (right-click)" }),
-    }
-    if gesture ~= "" then
-      for _, button in ipairs(other_buttons) do
-        if button ~= trigger.button then
-          table.insert(layer_bindings, hl.bind(button, function() end,
-            { ignore_mods = true, description = "Hotkey Wheel (other buttons off while held)" }))
-        end
-      end
-    end
+  if layer.namespace ~= wheel_layer then return end
+  layer_gesture = gesture
+  protect(cancel_binds, true)
+  if gesture ~= "" then
+    protect(held_binds, true)
+    hold_started = os.time()
+    hold_timer:set_enabled(true)
   end
 end)
+
 hl.on("layer.closed", function(layer)
-  if layer.namespace == "omarchy-hotkey-wheel" then
-    for _, binding in ipairs(layer_bindings) do binding:unbind() end
-    layer_bindings = {}
-  end
+  if layer.namespace ~= wheel_layer then return end
+  protect(cancel_binds, false)
+  protect(held_binds, false)
+  hold_timer:set_enabled(false)
+  -- Closed during a hold (the shell restarted, say): that gesture is over.
+  if gesture ~= "" and gesture == layer_gesture then gesture = "" end
+  layer_gesture = nil
 end)
+
+-- Hyprland reloaded with the wheel open: the binds that would end it are
+-- new and off, so the wheel is closed rather than left open.
+for _, monitor in ipairs(hl.get_monitors()) do
+  for _, layer in ipairs(hl.get_layers({ monitor = monitor.name, namespace = wheel_layer })) do
+    if layer.mapped then send("cancel") end
+  end
+end
