@@ -150,7 +150,7 @@ esac
     assert piped.stdout.startswith("setup\n") and time.monotonic() - started < 2, piped
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, timeout=10)
     assert lua_test.returncode == 0 and "PASS" in lua_test.stdout, lua_test.stdout + lua_test.stderr
     # Conflicts: the wheel's own unnamed button binds (one per other button) aren't
     # reported; a user's bind on the same button is, named or not.

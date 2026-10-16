@@ -136,9 +136,13 @@ hl.on("layer.closed", function(layer)
 end)
 
 -- Hyprland reloaded with the wheel open: the binds that would end it are
--- new and off, so the wheel is closed rather than left open.
-for _, monitor in ipairs(hl.get_monitors()) do
-  for _, layer in ipairs(hl.get_layers({ monitor = monitor.name, namespace = wheel_layer })) do
-    if layer.mapped then send("cancel") end
+-- new and off, so the wheel is closed rather than left open. Counted loops,
+-- not ipairs: Omarchy's keybinding list (SUPER + K) runs this file with a
+-- stand-in `hl` whose every call returns an endless table.
+local monitors = hl.get_monitors() or {}
+for m = 1, #monitors do
+  local layers = hl.get_layers({ monitor = monitors[m].name, namespace = wheel_layer }) or {}
+  for l = 1, #layers do
+    if layers[l].mapped == true then send("cancel") end
   end
 end

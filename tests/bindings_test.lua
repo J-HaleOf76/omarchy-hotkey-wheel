@@ -162,5 +162,27 @@ check(last() == id .. "cancel", "reload closes an open wheel")
 load('{"version":1}', { { namespace = "omarchy-hotkey-wheel", mapped = false } })
 check(#W.events == 0, "an unmapped wheel layer is left alone")
 
+-- Omarchy's keybinding list (SUPER + K) runs the config with a stand-in hl
+-- whose every unknown call returns an endless table: loading must finish and
+-- list no wheel bind but the described hold and release.
+local listed = {}
+local noop
+noop = setmetatable({}, { __index = function() return noop end, __call = function() return noop end })
+hl = setmetatable({
+  dsp = noop,
+  bind = function(keys, _, opts)
+    if opts and opts.description and opts.description ~= "" then table.insert(listed, opts.description) end
+    return noop
+  end,
+  get_config = function() return nil end,
+}, { __index = function() return noop end })
+load = nil
+local file = assert(io.open(base .. "/omarchy/extensions/hotkey-wheel.json", "w"))
+file:write('{"version":1}')
+file:close()
+dofile(script)
+check(#listed == 2 and listed[1] == "Hotkey Wheel (hold)" and listed[2] == "Hotkey Wheel (release)",
+      "SUPER + K lists only the hold and release: " .. table.concat(listed, ", "))
+
 os.execute("rm -rf '" .. base .. "'")
 print("bindings.lua: PASS")
