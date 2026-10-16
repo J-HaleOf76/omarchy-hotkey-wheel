@@ -93,7 +93,8 @@ else: print('{}')
     (sandbox / "hyprctl").write_text(r"""#!/bin/bash
 f="$XDG_CONFIG_HOME/hypr/bindings.lua"
 case "$1" in
-  binds) lua -e "assert(loadfile('$f'))" 2>/dev/null && grep -q 'hotkey-wheel/bindings.lua' "$f" \
+  binds) printf 'bind\n\tmodmask: 64\n\tkey: W\n\tdescription: Close window\n'
+         lua -e "assert(loadfile('$f'))" 2>/dev/null && grep -q 'hotkey-wheel/bindings.lua' "$f" \
            && printf 'bind\n\tmodmask: 0\n\tkey: mouse:274\n\tdescription: Hotkey Wheel (hold)\n' ;;
   configerrors) lua -e "assert(loadfile('$f'))" 2>&1 >/dev/null | head -n1 ;;
 esac
@@ -115,4 +116,17 @@ esac
     (base / "config/omarchy/extensions/hotkey-wheel.json").write_text('{"enabled": false}')
     by_hand = helper("unsetup")
     assert by_hand.returncode == 1 and "mine.lua" in by_hand.stderr, by_hand
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, agent proposals, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script checks, pinned scripts, warnings, replaced suggestions, picker opens on the slot's tab, setup/unsetup, exactly-once dispatch")
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    # The same line reached through a link (a linked folder or file, as stow
+    # makes) still counts, so switching the wheel off can be undone.
+    elsewhere = base / "dotfiles"
+    (elsewhere / "mods").mkdir(parents=True)
+    (hypr / "mine.lua").rename(elsewhere / "mods/mine.lua")
+    (hypr / "mods").symlink_to(elsewhere / "mods", target_is_directory=True)
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    (hypr / "mods").unlink()
+    (hypr / "mine.lua").symlink_to(elsewhere / "mods/mine.lua")
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    by_link = helper("unsetup")
+    assert by_link.returncode == 1 and "mine.lua" in by_link.stderr, by_link
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, agent proposals, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script checks, pinned scripts, warnings, replaced suggestions, picker opens on the slot's tab, setup/unsetup, wiring through links, exactly-once dispatch")

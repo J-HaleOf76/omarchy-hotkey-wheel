@@ -100,9 +100,10 @@ switched_off() {
 }
 
 # A Lua file in the Hyprland config folder loads this plugin's bindings.lua,
-# by Set up or by hand. Prints the files.
+# by Set up or by hand. Links are followed (a stow-style linked file or
+# folder). Prints the files.
 mentioned() {
-  [[ -d $hypr_dir ]] && grep -rlF --include='*.lua' "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
+  [[ -d $hypr_dir ]] && grep -RlF --include='*.lua' "io.github.erikrjohansson.hotkey-wheel/bindings.lua" -- "$hypr_dir" 2>/dev/null
 }
 
 # Whether Hyprland should bind the trigger after a reload.
