@@ -18,7 +18,12 @@ bindings_file="$hypr_dir/bindings.lua"
 settings_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/hotkey-wheel.json"
 lua_path=${plugin_dir//\\/\\\\}
 lua_path=${lua_path//\"/\\\"}
-setup_line="dofile(\"$lua_path/bindings.lua\")"
+# Loads bindings.lua only while it exists: removing the plugin (Omarchy's
+# menu just deletes its folder) must not break the rest of the config.
+setup_line="do local p = \"$lua_path/bindings.lua\" local f = io.open(p) if f then f:close() dofile(p) end end"
+# Versions before 0.7.3 wrote a plain dofile; that block is still recognised
+# so it can be removed.
+old_setup_line="dofile(\"$lua_path/bindings.lua\")"
 
 fail() {
   echo "$*" >&2
@@ -46,6 +51,8 @@ records() {
 block_begin="-- >>> io.github.erikrjohansson.hotkey-wheel: added by Hotkey Wheel's Set up (remove with hotkey-wheel unsetup)"
 block_end="-- <<< io.github.erikrjohansson.hotkey-wheel"
 block_text="$block_begin"$'\n'"$setup_line"$'\n'"$block_end"$'\n'
+old_block_text="$block_begin"$'\n'"$old_setup_line"$'\n'"$block_end"$'\n'
+found_block=""
 
 # The file's bytes, trailing newlines included; fails when it cannot be read.
 file_text() {
@@ -67,12 +74,20 @@ write_bindings() {
   return 1
 }
 
+# Whether the file holds Set up's block (or an older version's); sets
+# found_block to the exact text found.
 has_block() {
   [[ -f $bindings_file ]] || return 1
-  local text
+  local text candidate
   text=$(file_text && printf x) || return 1
   text=${text%x}
-  [[ $text == "$block_text"* || $text == *$'\n'"$block_text"* ]]
+  for candidate in "$block_text" "$old_block_text"; do
+    if [[ $text == "$candidate"* || $text == *$'\n'"$candidate"* ]]; then
+      found_block=$candidate
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Hyprland's bindings as "modmask<TAB>key<TAB>description<TAB>dispatcher" lines.
@@ -231,10 +246,10 @@ unsetup() {
     local text
     text=$(file_text && printf x) || fail "could not read $bindings_file"
     text=${text%x}
-    if [[ $text == "$block_text"* ]]; then
-      text=${text#"$block_text"}
+    if [[ $text == "$found_block"* ]]; then
+      text=${text#"$found_block"}
     else
-      text=${text/$'\n'"$block_text"/$'\n'}
+      text=${text/$'\n'"$found_block"/$'\n'}
     fi
     write_bindings "$text" || fail "could not write $bindings_file"
   fi

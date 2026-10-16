@@ -35,7 +35,10 @@ local settings = read_settings()
 local trigger = triggers[settings:match('"trigger"%s*:%s*"([%w%-]+)"')] or triggers.middle
 local enabled = settings:match('"enabled"%s*:%s*false') == nil
 local gesture = ""
-local sequence = 0
+-- Gesture tokens are "<time>-<sequence>"; starting the sequence from the
+-- clock keeps them new across reloads, so the wheel never takes a new hold
+-- for one it already saw released.
+local sequence = math.floor(os.clock() * 1000000)
 -- The open wheel: its layer and the gesture it belongs to, so the close of
 -- another wheel layer (an older one, closing late) changes nothing.
 local owner = nil
@@ -46,9 +49,14 @@ local owner = nil
 local function send(message)
   hl.dispatch(hl.dsp.event(wheel_id .. " " .. message))
 end
+-- Without a pointer position the wheel asks for one itself.
 local function at_cursor(message)
   local cursor = hl.get_cursor_pos()
-  send(string.format("%s %.1f %.1f", message, cursor.x, cursor.y))
+  if cursor and cursor.x and cursor.y then
+    send(string.format("%s %.1f %.1f", message, cursor.x, cursor.y))
+  else
+    send(message .. " nan nan")
+  end
 end
 
 -- Hold mode leaves keyboard focus alone to preserve the compositor's held

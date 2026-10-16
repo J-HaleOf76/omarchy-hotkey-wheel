@@ -180,6 +180,31 @@ esac
         assert result.returncode == 1 and "could not finish searching" in result.stderr, (command, result)
     assert bindings.read_text() == before
     locked.chmod(0o644)
+    # Set up's line loads the plugin only while it is there: removing the plugin
+    # (Omarchy just deletes its folder) leaves a line that does nothing.
+    bindings.write_text("x = 1\n")
+    locked.unlink()
+    (hypr / "gone.lua").unlink()
+    (base / "config/omarchy/extensions/hotkey-wheel.json").write_text('{"enabled": true}')
+    assert helper("setup").stdout == "setup\n", helper("setup")
+    line = bindings.read_text().splitlines()[2]
+    assert line.startswith("do local p = ") and "hotkey-wheel/bindings.lua" in line, line
+    stub = base / "stub-plugin"
+    stub.mkdir()
+    (stub / "bindings.lua").write_text('io.write("loaded")\n')
+    here = line.replace(str(root), str(stub))
+    gone = line.replace(str(root), str(base / "removed-plugin"))
+    assert subprocess.run(["lua", "-e", here], capture_output=True, text=True).stdout == "loaded"
+    removed = subprocess.run(["lua", "-e", gone], capture_output=True, text=True)
+    assert removed.returncode == 0 and removed.stdout == "", removed
+    assert helper("unsetup").stdout == "not-setup\n" and bindings.read_text() == "x = 1\n"
+    # The plain dofile block versions before 0.7.3 wrote is still removed, also
+    # from the middle of the file.
+    marker = "-- >>> io.github.erikrjohansson.hotkey-wheel: added by Hotkey Wheel's Set up (remove with hotkey-wheel unsetup)"
+    old_block = f'{marker}\ndofile("{root}/bindings.lua")\n-- <<< io.github.erikrjohansson.hotkey-wheel\n'
+    bindings.write_text("a = 1\n" + old_block + "b = 2\n")
+    assert helper("state").stdout.startswith("setup\n"), helper("state")
+    assert helper("unsetup").stdout == "not-setup\n" and bindings.read_text() == "a = 1\nb = 2\n", bindings.read_text()
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
                               capture_output=True, text=True, timeout=10)
@@ -196,4 +221,4 @@ esac
                                capture_output=True, text=True).stdout
     assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
         ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, keys/scroll/Space in click mode, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, unfinished searches refused, wheel binds never removed, conflicts, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, keys/scroll/Space in click mode, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, unfinished searches refused, guarded Set up line, old blocks removed, wheel binds never removed, conflicts, exactly-once dispatch")

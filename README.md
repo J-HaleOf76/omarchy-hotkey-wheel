@@ -60,16 +60,23 @@ once, either way:
   `hyprctl reload`:
 
   ```lua
-  dofile(os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.erikrjohansson.hotkey-wheel/bindings.lua")
+  do -- Hotkey Wheel, skipped once the plugin is removed
+    local wheel = os.getenv("HOME") .. "/.config/omarchy/plugins/io.github.erikrjohansson.hotkey-wheel/bindings.lua"
+    local file = io.open(wheel)
+    if file then file:close(); dofile(wheel) end
+  end
   ```
 
 Without it, the drawer works but holding the button does nothing.
 
 Middle-click opens the wheel by default, so plain middle-click no longer
-pastes (Ctrl+middle-click still reaches your apps). To use another button, pick it under
+reaches your apps (paste, open a link in a new tab, close a tab);
+Ctrl+middle-click still does. To use another button, pick it under
 **Open with** in the drawer: **Super + middle** keeps normal middle-click, and
 **Back** / **Forward** use the mouse's side buttons. The **On** switch in the
 drawer's top right corner turns the wheel off without removing anything.
+Switch it off there before disabling the plugin, since disabling leaves the
+button bound to the wheel.
 
 To open it from a key or a dial controller instead, bind one in
 `~/.config/hypr/bindings.lua`:
@@ -93,7 +100,8 @@ omarchy plugin update io.github.erikrjohansson.hotkey-wheel && hyprctl reload &&
 ```
 
 `unsetup` removes the line Set up added and reloads Hyprland; if you added it
-by hand, delete it yourself first. Your slots and custom actions stay in
+by hand, delete it yourself first. If you remove the plugin another way, the
+line just stops loading anything; delete it whenever you like. Your slots and custom actions stay in
 `~/.config/omarchy/extensions/` (the `hotkey-wheel*` files); delete them if
 you don't plan to come back.
 

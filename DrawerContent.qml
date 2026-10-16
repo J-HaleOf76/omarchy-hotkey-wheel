@@ -138,7 +138,7 @@ Column {
             Text {
                 id: setupText
                 anchors { left: parent.left; right: setupButton.left; rightMargin: Style.spacing.md; verticalCenter: parent.verticalCenter }
-                text: "The wheel can't open from your mouse yet."
+                text: "The wheel can't open from your mouse yet. Set up adds one line to ~/.config/hypr/bindings.lua and reloads Hyprland."
                 wrapMode: Text.Wrap
                 color: Color.popups.text
                 font { family: Style.font.menuFamily; pixelSize: Style.font.body }

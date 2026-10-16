@@ -89,6 +89,14 @@ check(not W.timers[1].enabled, "hold timer off")
 for _ = 1, 5 do hold.fn(); fire("layer.opened", "omarchy-hotkey-wheel"); release.fn(); fire("layer.closed", "omarchy-hotkey-wheel") end
 check(#W.binds == W.count, "repeated gestures add no binds")
 
+-- No pointer position: the hold still goes out, and the wheel asks itself.
+local cursor_pos = hl.get_cursor_pos
+hl.get_cursor_pos = function() return nil end
+hold.fn()
+check(sent("hold ") and last():sub(-8) == " nan nan", "hold without a pointer position: " .. last())
+hl.get_cursor_pos = cursor_pos
+release.fn()
+
 -- Other layers (the picker) change nothing.
 hold.fn()
 fire("layer.opened", "omarchy-hotkey-wheel-picker")
@@ -169,6 +177,15 @@ check(p.ESCAPE.enabled and not p["mouse:272"].enabled and not W.timers[1].enable
 p["mouse:273"].fn()
 check(last() == id .. "cancel", "right-click cancels click mode")
 fire("layer.closed", "omarchy-hotkey-wheel")
+
+-- Tokens stay new across a reload within the same second (both holds are
+-- the first after their load).
+load('{"version":1,"trigger":"middle"}')
+find("mouse:274", true).fn()
+local before_reload = last():match("hold (%S+)")
+load('{"version":1,"trigger":"middle"}')
+find("mouse:274", true).fn()
+check(last():match("hold (%S+)") ~= before_reload, "a reload doesn't reuse a gesture token")
 
 -- Back trigger: the other three buttons are covered.
 load('{"version":1,"trigger":"back"}')

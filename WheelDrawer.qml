@@ -44,6 +44,8 @@ Panel {
     property var conflicts: ({})
     property bool helperBusy: false
     property string setupError: ""
+    // The last state check's error, cleared from setupError once a check works.
+    property string stateError: ""
     readonly property bool dirty: draft.slots !== saved.slots || draft.labels !== saved.labels
                                   || !Actions.same(draft.actions, saved.actions)
     readonly property bool pickerOpen: picker.opened
@@ -356,8 +358,17 @@ Panel {
         id: stateCheck
         command: [root.helperPath, "state"]
         stdout: StdioCollector { id: stateOutput; waitForEnd: true }
+        stderr: StdioCollector { id: stateErrors; waitForEnd: true }
         onExited: function(code) {
-            if (code !== 0) return
+            // Say why the state is unknown (say a search of the Hyprland
+            // folder that couldn't finish), rather than leave it unexplained.
+            if (code !== 0) {
+                root.stateError = stateErrors.text.trim() || "Could not check the mouse setup."
+                root.setupError = root.stateError
+                return
+            }
+            if (root.setupError && root.setupError === root.stateError) root.setupError = ""
+            root.stateError = ""
             var lines = stateOutput.text.split("\n")
             var found = {}
             for (var i = 1; i < lines.length; ++i) {

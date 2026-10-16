@@ -137,6 +137,9 @@ Item {
         var parts = String(data).split(" ")
         if (parts[0] !== "io.github.erikrjohansson.hotkey-wheel") return
         var x = Number(parts[parts.length - 2]), y = Number(parts[parts.length - 1])
+        // "nan nan" when Hyprland had no pointer position: ask for it instead
+        // (as JSON, NaN would become null, which reads as 0).
+        if (!isFinite(x) || !isFinite(y)) { x = undefined; y = undefined }
         if (parts[1] === "hold" && parts.length === 5)
             open(JSON.stringify({ mode: "hold", token: parts[2], x: x, y: y }))
         else if (parts[1] === "release" && parts.length === 5) releaseGesture(parts[2], x, y)
