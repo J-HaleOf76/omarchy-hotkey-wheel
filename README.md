@@ -14,22 +14,6 @@ Hold the button, point toward a slot and release to run it. Release where you
 started, press **Esc** or right-click to cancel. While you hold, other mouse
 buttons don't click the window under the wheel.
 
-### From a key or a dial
-
-The wheel also works from the keyboard. To open it with a key (or a dial
-controller's button), add a line like this to `~/.config/hypr/bindings.lua`,
-with the key you want, and run `hyprctl reload`:
-
-```lua
-hl.bind("F13", hl.dsp.exec_cmd("omarchy-shell shell toggle io.github.erikrjohansson.hotkey-wheel"))
-```
-
-It opens at the pointer, and the same key closes it. Arrow keys, Tab or
-scrolling move between slots, **Enter** or **Space** runs one, 1–9 and 0 jump
-to a slot, and **Esc** closes it. Pick a key the dial doesn't also send for
-moving or choosing. This works with the drawer's **On** switch off too, which
-only turns off the mouse button.
-
 ## Change the slots
 
 Click the wheel icon (󰄦) in the bar. In the drawer, click a slot (or press
@@ -86,6 +70,15 @@ pastes (Ctrl+middle-click still reaches your apps). To use another button, pick 
 **Open with** in the drawer: **Super + middle** keeps normal middle-click, and
 **Back** / **Forward** use the mouse's side buttons. The **On** switch in the
 drawer's top right corner turns the wheel off without removing anything.
+
+To open it from a key or a dial controller instead, bind one in
+`~/.config/hypr/bindings.lua`:
+
+```lua
+hl.bind("F13", hl.dsp.exec_cmd("omarchy-shell shell toggle io.github.erikrjohansson.hotkey-wheel"))
+```
+
+Arrows or scroll move, **Enter** or **Space** runs, **Esc** closes.
 
 ## Update
 
