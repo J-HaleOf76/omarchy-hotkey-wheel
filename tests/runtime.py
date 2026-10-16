@@ -164,4 +164,4 @@ esac
                                capture_output=True, text=True).stdout
     assert conflicts.startswith("setup\n") and sorted(conflicts.splitlines()[1:]) == \
         ["conflict\tback\tanother binding", "conflict\tforward\tPaste"], conflicts
-    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, wheel binds never removed, conflicts, exactly-once dispatch")
+    print("PASS: directions, edge clamp, quick release, cancel, release position, settings reload, click hit-testing, keys/scroll/Space in click mode, drawer save/merge/swap/slots/names/trigger/on-off, Save it/rename, details script reads, warnings, prompt copied via stdin, picker opens on the slot's tab, setup/unsetup, wiring through links, pipes skipped, wheel binds never removed, conflicts, exactly-once dispatch")

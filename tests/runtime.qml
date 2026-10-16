@@ -222,6 +222,29 @@ ShellRoot {
             wheel.open('{"mode":"hold","token":"over-click-mode"}')
             check(wheel.opened && !wheel.holding && !wheel.locating && wheel.gestureToken !== "over-click-mode",
                   "hold trigger ignored while click mode is open")
+            // Click mode from keys or a dial: scroll steps a notch at a time, and
+            // running a slot takes a plain, fresh press (nothing here runs a command).
+            wheel.opened = true
+            wheel.selected = -1
+            wheel.scroll(-60)
+            check(wheel.selected === -1, "half a notch moves nothing")
+            wheel.scroll(-60)
+            check(wheel.selected === 0 && isFinite(wheel.steeredAt.x), "scroll down picks the first slot")
+            wheel.scroll(-240)
+            check(wheel.selected === 2, "two notches, two slots")
+            wheel.scroll(120)
+            check(wheel.selected === 1, "scroll up goes back")
+            check(wheel.keyPressed(Qt.Key_Down, 0, false) && wheel.selected === 2, "Down steps forward")
+            check(!wheel.keyPressed(Qt.Key_Space, Qt.ControlModifier, false) && !wheel.keyPressed(Qt.Key_Return, Qt.AltModifier, false)
+                  && !wheel.keyPressed(Qt.Key_3, Qt.MetaModifier, false) && !wheel.keyPressed(Qt.Key_Space, 0, true)
+                  && wheel.opened && !wheel.pendingCommand, "Ctrl/Alt/Super + key or a held key runs nothing")
+            wheel.holding = true
+            check(!wheel.keyPressed(Qt.Key_Down, 0, false) && wheel.selected === 2, "keys don't steer a hold")
+            wheel.scroll(-120)
+            check(wheel.selected === 2, "scroll doesn't steer a hold")
+            wheel.holding = false
+            wheel.selected = -1
+            check(wheel.keyPressed(Qt.Key_Space, 0, false) && !wheel.opened && !wheel.pendingCommand, "Space runs the selection")
             wheel.opened = wasOpened
             // Drawer: picks are trimmed, saved, and the draft ends clean.
             // (Opening re-reads the file; this drawer is never opened.)

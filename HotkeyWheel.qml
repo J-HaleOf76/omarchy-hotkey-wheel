@@ -32,6 +32,11 @@ Item {
     property real pointerAngle: NaN
     property string configError: ""
     property string pendingCommand: ""
+    // Click mode steered by keys or scroll (a dial, say): scroll not yet a
+    // whole step, and where the pointer was when a slot was picked that way,
+    // so a small nudge of the mouse doesn't replace it.
+    property real scrolled: 0
+    property point steeredAt: Qt.point(NaN, NaN)
     property string configPath: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config")
                                 + "/omarchy/extensions/hotkey-wheel.json"
     readonly property real radius: Math.min(Style.space(218), Math.min(panel.width, panel.height) / 2 - Style.space(20))
@@ -59,6 +64,8 @@ Item {
         finishing = false
         selected = -1
         pointerAngle = NaN
+        scrolled = 0
+        steeredAt = Qt.point(NaN, NaN)
         locating = true
         opened = false
         // Hyprland's events carry the pointer position; IPC callers do not.
@@ -166,6 +173,50 @@ Item {
         pointerAngle = selected < 0 ? NaN : Math.atan2(dy, dx)
     }
 
+    // Picks a slot from keys or scroll, in click mode.
+    function steer(index) {
+        selected = index
+        pointerAngle = NaN
+        steeredAt = Qt.point(pointer.mouseX, pointer.mouseY)
+    }
+
+    // Keys steer click mode only (a hold leaves the keyboard alone). Running a
+    // slot takes a plain press: not Ctrl/Alt/Super + key, and not a held key
+    // repeating. Returns whether the key was used.
+    function keyPressed(key, modifiers, autoRepeat) {
+        if (key === Qt.Key_Escape) { dismiss(); return true }
+        if (!opened || holding) return false
+        var count = actions.length
+        var plain = !(modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) && !autoRepeat
+        // 1–9 pick the first nine slots and 0 the tenth.
+        var digit = key === Qt.Key_0 ? 10 : key >= Qt.Key_1 && key <= Qt.Key_9 ? key - Qt.Key_0 : 0
+        if (digit) {
+            if (digit > count || !plain) return false
+            selected = digit - 1
+            activate()
+        } else if (key === Qt.Key_Return || key === Qt.Key_Enter || key === Qt.Key_Space) {
+            if (!plain) return false
+            activate()
+        }
+        else if (key === Qt.Key_Right || key === Qt.Key_Down || key === Qt.Key_Tab) steer((selected + 1) % count)
+        else if (key === Qt.Key_Left || key === Qt.Key_Up) steer(selected < 0 ? count - 1 : (selected + count - 1) % count)
+        else return false
+        return true
+    }
+
+    // Scroll turns the selection in click mode, one slot per notch (120 units;
+    // finer touchpad scroll adds up to one). Down moves forward, like Down.
+    function scroll(deltaY) {
+        if (holding || !opened || actions.length < 1) return
+        var count = actions.length
+        scrolled += deltaY
+        var steps = scrolled > 0 ? Math.floor(scrolled / 120) : Math.ceil(scrolled / 120)
+        if (steps === 0) return
+        scrolled -= steps * 120
+        var start = selected < 0 ? (steps < 0 ? -1 : 0) : selected
+        steer((((start - steps) % count) + count) % count)
+    }
+
     IpcHandler {
         target: "io.github.erikrjohansson.hotkey-wheel"
         function release(): void { root.release() }
@@ -257,21 +308,7 @@ Item {
             anchors.fill: parent
             focus: true
             Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true; return }
-                var count = root.actions.length
-                // 1–9 pick the first nine slots and 0 the tenth.
-                var digit = event.key === Qt.Key_0 ? 10 : event.key >= Qt.Key_1 && event.key <= Qt.Key_9 ? event.key - Qt.Key_0 : 0
-                if (digit) {
-                    if (digit > count) return
-                    root.selected = digit - 1
-                    root.activate()
-                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.activate()
-                else if (event.key === Qt.Key_Right || event.key === Qt.Key_Down || event.key === Qt.Key_Tab)
-                    root.selected = (root.selected + 1) % count
-                else if (event.key === Qt.Key_Left || event.key === Qt.Key_Up)
-                    root.selected = root.selected < 0 ? count - 1 : (root.selected + count - 1) % count
-                else return
-                event.accepted = true
+                event.accepted = root.keyPressed(event.key, event.modifiers, event.isAutoRepeat)
             }
 
             WheelFace {
@@ -285,10 +322,20 @@ Item {
             }
 
             MouseArea {
+                id: pointer
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-                onPositionChanged: function(mouse) { root.point(mouse.x, mouse.y) }
+                onPositionChanged: function(mouse) {
+                    // A slot picked by keys or scroll stays until the pointer really moves.
+                    if (!root.holding && isFinite(root.steeredAt.x)
+                            && Math.hypot(mouse.x - root.steeredAt.x, mouse.y - root.steeredAt.y) < Style.space(16)) return
+                    root.steeredAt = Qt.point(NaN, NaN)
+                    root.point(mouse.x, mouse.y)
+                }
+                // Scroll turns the selection in click mode, one slot per notch
+                // (120 units; finer touchpad scroll adds up to one).
+                onWheel: function(wheel) { root.scroll(wheel.angleDelta.y) }
                 onClicked: function(mouse) {
                     if (mouse.button === Qt.RightButton) root.dismiss()
                     else if (!root.holding && mouse.button === Qt.LeftButton) {
