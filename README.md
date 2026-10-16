@@ -100,7 +100,7 @@ you don't plan to come back.
 ## Requirements
 
 Omarchy 4 with the Lua Hyprland config (tested on Omarchy 4.0.0 alpha,
-Hyprland 0.56.2 and Quickshell 0.3.1). Uses `hyprctl`, `bash`, GNU coreutils, `grep`, `sed` and `awk`,
+Hyprland 0.56.2 and Quickshell 0.3.1). Uses `hyprctl`, `bash`, GNU coreutils, `grep`, `sed`, `find` and `awk`,
 `iconv`, `gtk-launch`, `uwsm-app`, `wl-copy` and `wl-paste`, all part of
 Omarchy. The Custom tab's **Copy prompt** works with any agent you use.
 

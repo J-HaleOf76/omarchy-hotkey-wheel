@@ -115,12 +115,14 @@ if enabled then
   protect(held_binds, false)
 end
 
--- A hold that never ends (its release was lost, say to the lock screen) is
--- cancelled after a minute. It never runs a slot.
+-- A wheel opened for a hold that is still open a minute later is cancelled:
+-- its release was lost (say to the lock screen), or the shell froze and never
+-- closed it, which would leave Escape and right-click taken. It never runs a
+-- slot.
 local hold_limit = 60
 local hold_started = 0
 hold_timer = hl.timer(function()
-  if gesture ~= "" and os.time() - hold_started >= hold_limit then cancel() end
+  if owner and owner.gesture ~= "" and os.time() - hold_started >= hold_limit then cancel() end
 end, { timeout = 1000, type = "repeat" })
 hold_timer:set_enabled(false)
 

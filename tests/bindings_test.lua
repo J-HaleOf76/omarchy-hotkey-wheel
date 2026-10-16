@@ -152,6 +152,17 @@ release.fn()
 check(#W.events == before, "and its release runs nothing")
 fire("layer.closed", "omarchy-hotkey-wheel")
 
+-- Released, but the wheel never closes (a frozen shell): Escape and
+-- right-click are given back after the same minute.
+hold.fn()
+fire("layer.opened", "omarchy-hotkey-wheel")
+release.fn()
+clock = clock + 61
+W.timers[1].fn()
+check(last() == id .. "cancel" and not p.ESCAPE.enabled and not p["mouse:273"].enabled and not W.timers[1].enabled,
+      "a wheel left open after its release is cancelled")
+fire("layer.closed", "omarchy-hotkey-wheel")
+
 -- Click mode (opened without a hold): cancel binds only.
 fire("layer.opened", "omarchy-hotkey-wheel")
 check(p.ESCAPE.enabled and not p["mouse:272"].enabled and not W.timers[1].enabled, "click mode: cancel only")

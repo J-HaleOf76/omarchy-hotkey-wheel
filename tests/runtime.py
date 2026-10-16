@@ -168,6 +168,18 @@ esac
         result = cut_short(command)
         assert result.returncode == 1 and "could not finish searching" in result.stderr, (command, result)
     assert bindings.read_text() == before
+    # grep also reports broken links and unreadable files: a broken link can't
+    # hold the line, so the answer stands; an unreadable Lua file might.
+    (hypr / "gone.lua").symlink_to(base / "nowhere.lua")
+    assert helper("state").stdout.startswith("not-setup\n"), helper("state")
+    locked = hypr / "locked.lua"
+    locked.write_text("-- unreadable\n")
+    locked.chmod(0)
+    for command in ("state", "setup", "unsetup"):
+        result = helper(command)
+        assert result.returncode == 1 and "could not finish searching" in result.stderr, (command, result)
+    assert bindings.read_text() == before
+    locked.chmod(0o644)
     # The wheel's binds over whole gestures, with a stand-in for Hyprland's Lua API.
     lua_test = subprocess.run(["lua", str(root / "tests/bindings_test.lua"), str(root / "bindings.lua")],
                               capture_output=True, text=True, timeout=10)

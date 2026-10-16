@@ -112,10 +112,16 @@ mentioned() {
     out=$(timeout 3 grep -RlF --devices=skip --include='*.lua' "$needle" -- "$hypr_dir" 2>/dev/null)
     status=$?
   fi
-  # grep goes on past unreadable files and broken links (and then exits 2);
-  # only the time limit leaves the answer open.
   (( status == 124 || status == 137 )) && return 2
-  [[ $status == 0 || -n $out ]] || return 1
+  # grep goes on past broken links and files it can't read, and then exits 2.
+  # A broken link can't hold the line, but an unreadable Lua file might.
+  if [[ $status != 0 && -z $out ]]; then
+    (( status == 1 )) && return 1
+    local unreadable
+    unreadable=$(timeout 3 find -L "$hypr_dir" -name '*.lua' -type f ! -readable -print -quit 2>/dev/null)
+    (( $? == 124 )) || [[ -n $unreadable ]] && return 2
+    return 1
+  fi
   [[ -n $out ]] && printf '%s\n' "$out"
   return 0
 }
